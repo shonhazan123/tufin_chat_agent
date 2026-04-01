@@ -1,0 +1,73 @@
+"""API integration tests — in-memory SQLite, mocked agent startup and runner."""
+
+from __future__ import annotations
+
+import asyncio
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from starlette.testclient import TestClient
+
+from app.settings import get_settings
+from app.db.session import dispose_engine
+from app.integrations.agent_runner import AgentRunResult
+
+
+@pytest.fixture(autouse=True)
+def _api_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.setenv("REDIS_URL", "")
+    monkeypatch.delenv("API_KEY", raising=False)
+    get_settings.cache_clear()
+    monkeypatch.setattr("agent.startup.startup", AsyncMock())
+
+
+@pytest.fixture
+def client() -> TestClient:
+    asyncio.run(dispose_engine())
+    get_settings.cache_clear()
+    from app.main import app
+
+    with TestClient(app) as c:
+        yield c
+    asyncio.run(dispose_engine())
+    get_settings.cache_clear()
+
+
+def test_health_ok(client: TestClient) -> None:
+    r = client.get("/api/v1/health")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["sqlite"] == "ok"
+    assert data["redis"] == "skipped"
+
+
+def test_post_task_returns_task_id(client: TestClient) -> None:
+    async def fake_run(_task: str) -> AgentRunResult:
+        return AgentRunResult(final_answer="hello", trace=[{"type": "demo"}])
+
+    with patch("app.services.task_service.run_agent_task", fake_run):
+        r = client.post("/api/v1/task", json={"task": "ping"})
+    assert r.status_code == 200
+    data = r.json()
+    assert "task_id" in data
+    assert data["final_answer"] == "hello"
+    assert data["trace"] == [{"type": "demo"}]
+
+
+def test_get_task_roundtrip(client: TestClient) -> None:
+    async def fake_run(_task: str) -> AgentRunResult:
+        return AgentRunResult(final_answer="round", trace=[])
+
+    with patch("app.services.task_service.run_agent_task", fake_run):
+        post = client.post("/api/v1/task", json={"task": "x"})
+    assert post.status_code == 200
+    tid = post.json()["task_id"]
+    get = client.get(f"/api/v1/tasks/{tid}")
+    assert get.status_code == 200
+    assert get.json()["final_answer"] == "round"
+
+
+def test_get_task_404(client: TestClient) -> None:
+    r = client.get("/api/v1/tasks/00000000-0000-0000-0000-000000000001")
+    assert r.status_code == 404
