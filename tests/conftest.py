@@ -15,6 +15,8 @@ _TEST_CONFIG = {
         "responder": {"model": "test", "max_tokens": 1024, "temperature": 0.3, "num_ctx": 8192, "max_retries": 3},
         "weather": {"model": "test", "max_tokens": 256, "temperature": 0, "num_ctx": 2048, "max_retries": 3},
         "web_search": {"model": "test", "max_tokens": 512, "temperature": 0, "num_ctx": 4096, "max_retries": 3},
+        "calculator": {"model": "test", "max_tokens": 256, "temperature": 0, "num_ctx": 2048, "max_retries": 3},
+        "unit_converter": {"model": "test", "max_tokens": 256, "temperature": 0, "num_ctx": 2048, "max_retries": 3},
     },
     "tools": {
         "calculator": {"enabled": True},
@@ -27,7 +29,12 @@ _TEST_CONFIG = {
         "llm_cache_path": "./.cache/test.db",
         "tool_ttls": {"calculator": 0, "weather": 300, "web_search": 600, "unit_converter": 60},
     },
-    "executor": {"max_waves": 10, "max_parallel_tools": 8, "tool_timeout_seconds": 15},
+    "executor": {
+        "max_waves": 10,
+        "max_parallel_tools": 8,
+        "tool_timeout_seconds": 15,
+        "max_tool_attempts": 2,
+    },
     "graph": {"max_retries": 3},
 }
 
@@ -40,12 +47,23 @@ _CONFIG_PATCH_TARGETS = [
     "agent.tools.web_search.load_config",
     "agent.tools.unit_converter.load_config",
     "agent.graph_nodes.load_config",
+    "app.services.task_service.load_config",
+    "app.integrations.agent_runner.load_config",
 ]
 
 
 @pytest.fixture()
 def test_config():
     return _TEST_CONFIG
+
+
+def pytest_configure(config):
+    """Populate the tool registry and LLM semaphore before tests (matches production startup)."""
+    from agent.llm import init_llm_semaphore
+    from agent.tools import discover_tools
+
+    discover_tools()
+    init_llm_semaphore()
 
 
 @pytest.fixture(autouse=True)

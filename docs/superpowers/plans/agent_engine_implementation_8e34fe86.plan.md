@@ -322,7 +322,7 @@ flowchart LR
 - FastAPI app with lifespan calling `startup()`
 - Single `/health` endpoint
 - Single `/task` POST endpoint (invokes graph, manages conversation context lifecycle)
-- All `llm.ainvoke()` and `_call_api()` wrapped in `asyncio.wait_for(timeout=cfg["executor"]["tool_timeout_seconds"])`
+- All `llm.ainvoke()` and `_tool_executer()` wrapped in `asyncio.wait_for(timeout=cfg["executor"]["tool_timeout_seconds"])`
 
 ### Phase 7: Tests
 

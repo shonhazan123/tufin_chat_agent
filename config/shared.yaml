@@ -1,0 +1,43 @@
+# =============================================================================
+# Shared settings — merged at startup with config/openai.yaml OR config/ollama.yaml
+#
+# Which file is merged is controlled ONLY by env var LLM_PROVIDER (see repo .env.example):
+#   LLM_PROVIDER=openai  |  LLM_PROVIDER=ollama
+# Default if unset: openai
+#
+# Per-provider connection + model names: config/openai.yaml and config/ollama.yaml
+# =============================================================================
+
+tools:
+  calculator:
+    enabled: true
+  weather:
+    enabled: true
+    api_key: ${WEATHER_API_KEY}
+    timeout_seconds: 5
+  web_search:
+    enabled: true
+    api_key: ${TAVILY_API_KEY}
+    max_results: 5
+  unit_converter:
+    enabled: true
+    currency_api_key: ${EXCHANGE_API_KEY}
+
+cache:
+  enabled: true
+  llm_cache_path: ./.cache/langchain.db
+  tool_ttls:
+    calculator: 0
+    weather: 300
+    web_search: 600
+    unit_converter: 60
+
+executor:
+  max_waves: 10
+  max_parallel_tools: 8
+  tool_timeout_seconds: 15
+  # Per tool task: try planner-supplied params first; on failure, tool LLM may recover (each cycle = planner args or one LLM extraction + _tool_executer).
+  max_tool_attempts: 2
+
+graph:
+  max_retries: 3

@@ -28,7 +28,7 @@ YOUR_TOOL_SYSTEM = SPEC.system_prompt  # static constant
 
 @registry.register(SPEC)
 class YourToolAgent(BaseToolAgent):
-    async def _call_api(self, params: dict) -> dict:
+    async def _tool_executer(self, params: dict) -> dict:
         # params extracted by the LLM from the user's sub_task
         result = await call_your_api(**params)
         return {"field_a": result["val"], "field_b": result["label"]}
@@ -57,24 +57,23 @@ class YourFunctionTool(BaseFunctionTool):
 
 ### Step 3: Add Config Block
 
-In `config.yaml`, add an agent entry (if LLM tool) and a tools entry:
+Add an **agent** entry in both `config/openai.yaml` and `config/ollama.yaml` (if LLM tool), with models appropriate to each provider. Add **tool** settings and TTLs in `config/shared.yaml`:
 
 ```yaml
+# config/openai.yaml or config/ollama.yaml — agents.your_tool (LLM tools only)
 agents:
-  your_tool:              # only for LLM tools
-    model: llama3.2:3b-instruct-q4_K_M
+  your_tool:
+    model: gpt-4o-mini   # or a local model id under Ollama
     max_tokens: 256
     temperature: 0
-    num_ctx: 2048
+    num_ctx: 2048        # Ollama only; omit for OpenAI
 
+# config/shared.yaml
 tools:
   your_tool:
     enabled: true
     api_key: ${YOUR_TOOL_API_KEY}   # if needed
-```
 
-Add the TTL in the cache section:
-```yaml
 cache:
   tool_ttls:
     your_tool: 60
@@ -93,6 +92,6 @@ cache:
 
 - `run()` (LLM tools) must return a `dict` with all fields declared in `output_schema`
 - `call()` (function tools) must return a `dict` with all fields declared in `output_schema`
-- The tool's `name` must match the key used in `config.yaml` under `tools:` and `agents:`
+- The tool's `name` must match the key used under `tools:` in `config/shared.yaml` and `agents:` in each provider YAML
 - All HTTP calls must use `aiohttp`, never `requests`
 - CPU-bound work should use `ThreadPoolExecutor`

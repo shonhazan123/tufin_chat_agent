@@ -22,4 +22,4 @@ The API enables CORS for origins from `CORS_ORIGINS` (e.g. `http://localhost:517
 
 ## Static / Docker
 
-The SPA can still be built and served as static files (see [`chat-ui/README.md`](../../chat-ui/README.md)). Point `VITE_API_BASE_URL` at the deployed API host.
+The SPA can still be built and served as static files (see [`chat-ui/README.md`](../../chat-ui/README.md)). Point `VITE_API_BASE_URL` at the deployed API host (in Docker it is passed as a **build arg**; see [docker.md](docker.md)).

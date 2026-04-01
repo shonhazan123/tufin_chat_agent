@@ -63,7 +63,8 @@ async def executor_node(state: dict[str, Any]) -> dict[str, Any]:
     """Execute one wave of ready tasks via asyncio.gather.
 
     A task is "ready" when all its dependencies are already in results.
-    LLM tools go through agent.run(); function tools go through agent.call().
+    LLM tools: agent.run(..., planner_params=task['params'], context_summary=...).
+    Function tools (if any): agent.call(task['params']).
     """
     plan = state["plan"]
     results = state.get("results") or {}
@@ -92,8 +93,10 @@ async def executor_node(state: dict[str, Any]) -> dict[str, Any]:
                     res = await asyncio.wait_for(
                         agent.run(
                             user_msg=state["task"],
-                            sub_task=task["sub_task"],
+                            sub_task=task.get("sub_task") or "",
                             prior_results=results,
+                            planner_params=task.get("params"),
+                            context_summary=state.get("context_summary") or "",
                         ),
                         timeout=timeout,
                     )

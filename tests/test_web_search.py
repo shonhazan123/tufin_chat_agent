@@ -20,8 +20,8 @@ def search_agent():
 
 
 @pytest.mark.asyncio
-async def test_call_api_returns_schema(search_agent):
-    """_call_api should return query, results list, and summary."""
+async def test_tool_executer_returns_schema(search_agent):
+    """_tool_executer should return query, results list, and summary."""
     mock_wrapper = AsyncMock()
     mock_wrapper.aresults = AsyncMock(return_value=[
         {"title": "Result 1", "url": "https://example.com/1", "content": "First result content"},
@@ -32,7 +32,7 @@ async def test_call_api_returns_schema(search_agent):
         "langchain_community.utilities.tavily_search.TavilySearchAPIWrapper",
         return_value=mock_wrapper,
     ):
-        result = await search_agent._call_api({"query": "test query"})
+        result = await search_agent._tool_executer({"query": "test query"})
 
     assert result["query"] == "test query"
     assert len(result["results"]) == 2
@@ -43,6 +43,6 @@ async def test_call_api_returns_schema(search_agent):
 
 @pytest.mark.asyncio
 async def test_empty_query_returns_no_results(search_agent):
-    result = await search_agent._call_api({"query": ""})
+    result = await search_agent._tool_executer({"query": ""})
     assert result["results"] == []
     assert result["summary"] == "No query provided."

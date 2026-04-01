@@ -1,23 +1,69 @@
+# Full stack: Redis, FastAPI API, static chat UI (nginx).
+# 1. Copy .env.example → .env and set API keys / LLM_PROVIDER (see docs/project-instruction/docker.md).
+# 2. docker compose up --build
+# API: http://127.0.0.1:8000  UI: http://127.0.0.1:8080  Redis: localhost:6379
+
 services:
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    # Loads LLM_PROVIDER, OPENAI_API_KEY, tool keys, etc. into the container environment.
+    env_file:
+      - .env
     environment:
+      # Override host .env for in-compose networking and UI origins (see docs/project-instruction/docker.md).
       DATABASE_URL: sqlite+aiosqlite:////data/app.db
       REDIS_URL: redis://redis:6379/0
       REDIS_OPTIONAL: "false"
-      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      CORS_ORIGINS: http://localhost,http://127.0.0.1,http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173
     volumes:
       - sqlite_data:/data
+      # Image build omits .env; mount so load_dotenv() and app Settings see /app/.env at runtime.
+      - ./.env:/app/.env:ro
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  web:
+    build:
+      context: ./chat-ui
+      dockerfile: Dockerfile
+      args:
+        # URL must be reachable from the tester’s browser (host machine), not from inside Docker.
+        VITE_API_BASE_URL: http://127.0.0.1:8000
+        # Optional; set VITE_API_KEY in project .env if the API uses API_KEY (same value as server).
+        VITE_API_KEY: ${VITE_API_KEY:-}
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
 
 volumes:
   sqlite_data:

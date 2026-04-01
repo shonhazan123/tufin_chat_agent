@@ -1,6 +1,8 @@
-"""Tests for the calculator tool — pure math evaluation."""
+"""Tests for the calculator tool — safe math evaluation and _tool_executer."""
 
 from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -47,9 +49,32 @@ class TestSafeEval:
 
 
 @pytest.mark.asyncio
-async def test_calculator_tool_call():
-    from agent.tools.calculator import CalculatorTool
+async def test_calculator_tool_executer():
+    from agent.tools.calculator import CalculatorAgent
 
-    tool = CalculatorTool()
-    result = await tool.call({"expression": "2 + 2"})
+    agent = CalculatorAgent()
+    result = await agent._tool_executer({"expression": "2 + 2"})
     assert result == {"result": 4.0}
+
+
+@pytest.mark.asyncio
+async def test_run_planner_args_fail_then_tool_llm_recover():
+    """Bad planner expression triggers tool LLM; second attempt succeeds."""
+    from agent.tools.calculator import CalculatorAgent
+
+    with patch("agent.tools.base.build_llm") as mock_build:
+        mock_llm = AsyncMock()
+        mock_build.return_value = mock_llm
+        mock_llm.ainvoke = AsyncMock(
+            return_value=MagicMock(content='{"expression": "2+2"}')
+        )
+        agent = CalculatorAgent()
+        out = await agent.run(
+            user_msg="compute",
+            sub_task="fix",
+            prior_results={},
+            planner_params={"expression": "1/0"},
+            context_summary="",
+        )
+        assert out["result"] == 4.0
+        mock_llm.ainvoke.assert_called_once()

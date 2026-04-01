@@ -1,4 +1,4 @@
-"""Unit converter tool — pure function for length, weight, temperature, currency."""
+"""Unit converter — LLM extracts units and value, then deterministic conversion (+ currency API)."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ from typing import Any
 import aiohttp
 
 from agent.yaml_config import load_config
-from agent.tools.base import BaseFunctionTool, ToolSpec, registry
+from agent.tools.base import BaseToolAgent, ToolSpec, registry
 
 SPEC = ToolSpec(
     name="unit_converter",
-    type="function",
+    type="llm",
     purpose="Convert a value between units (length, weight, temperature, currency).",
     output_schema={
         "result": float,
@@ -20,12 +20,28 @@ SPEC = ToolSpec(
         "formula": str,
     },
     input_schema={
-        "value": "float — the numeric value to convert",
+        "value": "float — numeric value to convert",
         "from_unit": "str — source unit (e.g. 'km', 'lb', 'celsius', 'USD')",
         "to_unit": "str — target unit (e.g. 'miles', 'kg', 'fahrenheit', 'EUR')",
     },
+    system_prompt=(
+        "You output JSON for the unit-conversion backend. The planner should pass "
+        "value/from_unit/to_unit in 'params'; you run when those are missing or conversion "
+        "failed — then infer or fix from the user request, conversation summary, sub-task, "
+        "prior tool results, and any error message.\n\n"
+        "Output ONLY a JSON object with these fields:\n"
+        '  {"value": <number>, "from_unit": "<string>", "to_unit": "<string>"}\n\n'
+        "Rules:\n"
+        "- Use standard short unit symbols where possible (km, miles, kg, lb, USD, EUR, "
+        "celsius, fahrenheit, kelvin, etc.).\n"
+        "- If prior results contain a number to convert, use that value.\n"
+        "- For currency, use three-letter codes (USD, EUR, …).\n"
+        "- Output raw JSON only — no markdown, no explanation.\n"
+    ),
     default_ttl_seconds=60,
 )
+
+UNIT_CONVERTER_SYSTEM = SPEC.system_prompt
 
 _LENGTH = {
     ("km", "miles"): (0.621371, "{v} * 0.621371"),
@@ -118,12 +134,17 @@ async def _convert_currency(
 
 
 @registry.register(SPEC)
-class UnitConverterTool(BaseFunctionTool):
+class UnitConverterAgent(BaseToolAgent):
+    SYSTEM = UNIT_CONVERTER_SYSTEM
 
-    async def call(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _tool_executer(self, params: dict[str, Any]) -> dict[str, Any]:
+        if "value" not in params:
+            raise ValueError("Missing 'value' in extracted params")
         value = float(params["value"])
-        from_unit = _normalize(params["from_unit"])
-        to_unit = _normalize(params["to_unit"])
+        from_unit = _normalize(str(params.get("from_unit", "")))
+        to_unit = _normalize(str(params.get("to_unit", "")))
+        if not from_unit or not to_unit:
+            raise ValueError("Missing 'from_unit' or 'to_unit'")
 
         if from_unit == to_unit:
             return {

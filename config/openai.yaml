@@ -1,0 +1,36 @@
+provider: openai
+
+openai:
+  base_url: https://api.openai.com/v1
+  api_key: ${OPENAI_API_KEY}
+
+agents:
+  planner:
+    model: gpt-5.1
+    max_tokens: 512
+    temperature: 0
+  responder:
+    model: gpt-4o-mini
+    max_tokens: 1024
+    temperature: 0.3
+    max_retries: 3
+  weather:
+    model: gpt-4o-mini
+    max_tokens: 256
+    temperature: 0
+    max_retries: 3
+  web_search:
+    model: gpt-4o-mini
+    max_tokens: 512
+    temperature: 0
+    max_retries: 3
+  calculator:
+    model: gpt-4o-mini
+    max_tokens: 256
+    temperature: 0
+    max_retries: 3
+  unit_converter:
+    model: gpt-4o-mini
+    max_tokens: 256
+    temperature: 0
+    max_retries: 3

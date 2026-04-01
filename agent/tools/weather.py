@@ -20,9 +20,15 @@ SPEC = ToolSpec(
         "condition": str,
         "city_name": str,
     },
+    input_schema={
+        "city": "str — place name for the forecast",
+        "units": "str — 'metric' or 'imperial'",
+    },
     system_prompt=(
-        "You are a weather parameter extractor. Given a user request and task, "
-        "extract the city name and preferred units.\n\n"
+        "You output JSON for the weather API. The planner should pass city and units in "
+        "'params'; you run when those are missing or the API call failed — then infer or "
+        "correct city/units from the user request, conversation summary, sub-task, prior "
+        "results, and any error message.\n\n"
         "Output ONLY a JSON object with these fields:\n"
         '  {"city": "<city name>", "units": "metric"}\n\n'
         "Rules:\n"
@@ -40,7 +46,7 @@ WEATHER_SYSTEM = SPEC.system_prompt
 class WeatherAgent(BaseToolAgent):
     SYSTEM = WEATHER_SYSTEM
 
-    async def _call_api(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _tool_executer(self, params: dict[str, Any]) -> dict[str, Any]:
         city = params.get("city", "London")
         cfg = load_config()
         tool_cfg = cfg["tools"]["weather"]

@@ -176,7 +176,7 @@ class BaseToolAgent:
             # semaphore released — API call runs freely
             try:
                 params = json.loads(params_msg.content)
-                return await self._call_api(params)
+                return await self._tool_executer(params)
             except json.JSONDecodeError as e:
                 feedback = str(e)
         raise ToolExtractionError(f"{self.spec.name}: LLM extraction failed after {self.max_retries} retries")
@@ -434,7 +434,7 @@ set_llm_cache(SQLiteCache(database_path=".cache/langchain.db"))
 **Rule:** `PLANNER_SYSTEM` is a module-level string constant but is only valid after step 2 completes.
 `startup.py` must import tools before importing prompts — enforced by explicit import order in `startup.py`.
 
-**LLM call timeouts:** All `llm.ainvoke()` and `_call_api()` calls are wrapped:
+**LLM call timeouts:** All `llm.ainvoke()` and `_tool_executer()` calls are wrapped:
 ```python
 await asyncio.wait_for(llm.ainvoke(messages), timeout=cfg["executor"]["tool_timeout_seconds"])
 ```

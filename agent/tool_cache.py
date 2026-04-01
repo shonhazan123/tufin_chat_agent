@@ -21,7 +21,7 @@ async def cached_call(
 ) -> Any:
     """Execute *fn* with TTL-based caching keyed on (name + kwargs).
 
-    If ttl == 0, bypass caching entirely (e.g. calculator — deterministic).
+    If ttl == 0, bypass caching entirely (e.g. tools configured with ttl 0 in shared.yaml).
     """
     if ttl == 0:
         return await fn(**kwargs)

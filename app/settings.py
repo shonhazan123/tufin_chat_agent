@@ -34,15 +34,13 @@ class Settings(BaseSettings):
         description="If set, require X-API-Key header on task routes",
     )
     cache_ttl_seconds: int = Field(default=3600, ge=60)
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    # Comma-separated origins (env must NOT be JSON). pydantic-settings would
+    # json.loads() list[str] before validators — a plain URL breaks startup.
+    cors_origins: str = Field(
+        default="http://localhost:5173",
+        description="Comma-separated CORS allowed origins",
+    )
     api_v1_prefix: str = "/api/v1"
-
-    @field_validator("cors_origins", mode="before")
-    @classmethod
-    def split_origins(cls, v: str | list[str]) -> list[str]:
-        if isinstance(v, str):
-            return [s.strip() for s in v.split(",") if s.strip()]
-        return v
 
     @field_validator("redis_url", mode="before")
     @classmethod

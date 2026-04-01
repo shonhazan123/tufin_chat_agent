@@ -18,9 +18,13 @@ SPEC = ToolSpec(
         "results": list,
         "summary": str,
     },
+    input_schema={
+        "query": "str — concise search query string",
+    },
     system_prompt=(
-        "You are a search query extractor. Given a user request and task, "
-        "produce an optimal web search query.\n\n"
+        "You output JSON for the search API. The planner should pass 'query' in 'params'; "
+        "you run when that is missing or search failed — then craft a better query from the "
+        "user request, conversation summary, sub-task, prior results, and any error message.\n\n"
         "Output ONLY a JSON object with this field:\n"
         '  {"query": "<search query string>"}\n\n'
         "Rules:\n"
@@ -47,7 +51,7 @@ class WebSearchAgent(BaseToolAgent):
             os.environ.setdefault("TAVILY_API_KEY", api_key)
         self.max_results: int = tool_cfg.get("max_results", 5)
 
-    async def _call_api(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _tool_executer(self, params: dict[str, Any]) -> dict[str, Any]:
         query = params.get("query", "")
         if not query:
             return {"query": "", "results": [], "summary": "No query provided."}

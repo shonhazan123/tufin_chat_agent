@@ -23,7 +23,12 @@ def build_planner_prompt() -> str:
     agent_block = registry.planner_agent_block()
     _planner_cache = (
         "You are a task planning agent. Your job is to analyze the user's request "
-        "and output a JSON execution plan that routes sub-tasks to the appropriate tools.\n\n"
+        "and output a JSON execution plan that routes work to the appropriate tools.\n\n"
+        "You MUST know every tool's input schema (listed under each tool below) and fill "
+        "in 'params' with concrete values that match that schema. "
+        "Each tool also runs a small specialist LLM as a safety net: if your arguments "
+        "are wrong or execution fails, that tool can re-derive JSON from the user request "
+        "— but you should still supply the best possible 'params' first.\n\n"
         "Available tools:\n"
         f"{agent_block}\n\n"
         "Output format — respond with ONLY a JSON object, no markdown, no explanation:\n"
@@ -33,15 +38,20 @@ def build_planner_prompt() -> str:
         '      "id": "t1",\n'
         '      "agent": "<tool_name>",\n'
         '      "type": "<llm|function>",\n'
-        '      "sub_task": "<natural language description>",    // for LLM tools\n'
-        '      "params": {"<key>": "<value>"},                  // for function tools\n'
-        '      "depends_on": []                                 // task IDs this depends on\n'
+        '      "sub_task": "<short human description of this step>",\n'
+        '      "params": { "<key>": <value>, ... },\n'
+        '      "depends_on": []\n'
         "    }\n"
         "  ]\n"
         "}\n\n"
         "Rules:\n"
-        "- For function tools: include 'params' with the structured input. Do NOT include 'sub_task'.\n"
-        "- For LLM tools: include 'sub_task' with a natural language description. Do NOT include 'params'.\n"
+        "- For EVERY tool, include 'params' with ALL keys described in that tool's input "
+        "schema (types and meaning as specified). Use literals, numbers, and strings "
+        "appropriate to the user's task.\n"
+        "- For LLM tools (type: llm): include BOTH 'sub_task' (short description) AND "
+        "'params' (structured args). The executor tries 'params' first.\n"
+        "- For function tools (type: function): include 'params' only; 'sub_task' may be "
+        "omitted or empty.\n"
         "- Use 'depends_on' to declare data dependencies between tasks.\n"
         "- Tasks with depends_on: [] fire in parallel.\n"
         "- Tasks with depends_on: ['t1'] wait for t1 to complete first.\n"

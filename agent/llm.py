@@ -18,6 +18,8 @@ def build_llm(agent_name: str) -> ChatOpenAI:
 
     This is the *only* place ChatOpenAI is instantiated.
     Results are cached per agent_name via @lru_cache.
+    Agent names include planner, responder, and each LLM-backed tool (e.g. weather,
+    web_search, calculator, unit_converter).
     """
     cfg = load_config()
     provider = cfg["provider"]

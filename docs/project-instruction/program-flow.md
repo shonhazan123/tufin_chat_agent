@@ -5,7 +5,7 @@
 Initialization happens in strict order to avoid empty prompt constants and circular imports:
 
 ```
-1. agent/yaml_config.py    → load_config() cached (no side effects)
+1. agent/yaml_config.py    → load_config() merges shared + openai/ollama YAML per LLM_PROVIDER; cached
 2. agent/tools/__init__.py → autodiscovery; all @register decorators fire; registry populated
 3. agent/prompts.py        → PLANNER_SYSTEM built from populated registry (frozen)
 4. agent/llm.py            → build_llm() per agent (lru_cache warms up)
@@ -13,7 +13,7 @@ Initialization happens in strict order to avoid empty prompt constants and circu
 6. agent/tool_cache.py    → init_llm_cache() sets up SQLiteCache
 7. agent/context.py        → conversation_context singleton created
 8. agent/graph.py          → LangGraph compiled
-9. app/main.py             → FastAPI lifespan: init SQLite tables, Redis client, then `agent.startup.startup()`; uvicorn starts
+9. app/main.py             → FastAPI lifespan: init SQLite tables, Redis client, then `agent.startup.startup()`; uvicorn starts (see [docker.md](docker.md) for containerized Redis + API + static UI)
 ```
 
 ## Request Lifecycle
@@ -48,8 +48,8 @@ graph.ainvoke({
   ▼
 ┌─ executor_node (wave loop) ────────────────────────────┐
 │  Finds ready tasks (all deps satisfied)                │
-│  For LLM tools: agent.run(user_msg, sub_task, prior)   │
-│  For function tools: agent.call(params)                │
+│  For LLM tools: agent.run(..., planner_params, context_summary) │
+│  For function tools (if any): agent.call(params)       │
 │  Runs all ready tasks via asyncio.gather()             │
 │  Returns {"results": {...}, "trace": [...]}            │
 └────────────────────────────────────────────────────────-┘

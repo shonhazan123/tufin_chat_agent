@@ -70,11 +70,11 @@ User Request
 
 ### `agent/yaml_config.py` — Configuration Loader
 
-**What it does:** Loads `config.yaml` once, resolves `${ENV_VAR:-default}` patterns from `.env`, caches the result for the process lifetime via `@lru_cache`.
+**What it does:** After `load_dotenv()`, reads `LLM_PROVIDER` (`openai` or `ollama`, default `openai`), loads `config/shared.yaml` and the matching provider file (`config/openai.yaml` or `config/ollama.yaml`), deep-merges them (provider overlay wins), resolves `${ENV_VAR:-default}` patterns, and caches the result for the process lifetime via `@lru_cache`.
 
 ### `agent/llm.py` — LLM Factory
 
-**What it does:** The sole `ChatOpenAI` instantiation point. Builds one LLM instance per agent name (planner, responder, weather, web_search) with per-agent model/temperature/token settings. Manages the LLM concurrency semaphore (1 for Ollama, 5 for OpenAI).
+**What it does:** The sole `ChatOpenAI` instantiation point. Builds one LLM instance per agent name (planner, responder, and each LLM-backed tool such as weather, web_search, calculator, unit_converter) with per-agent model/temperature/token settings. Manages the LLM concurrency semaphore (1 for Ollama, 5 for OpenAI).
 
 ### `agent/state.py` — Graph State Definition
 
@@ -96,7 +96,7 @@ User Request
 
 **What it does:** Defines the fixed system prompts used as `SystemMessage` content:
 
-- **Planner prompt** — Built lazily from the tool registry. Tells the LLM what tools exist, their types (llm/function), input/output schemas, and the JSON output format.
+- **Planner prompt** — Built lazily from the tool registry. Tells the planner LLM what tools exist, each tool’s input/output field names, and that every task must include structured `params` matching those schemas (plus `sub_task` for LLM-typed tools). The executor tries planner `params` before invoking each tool’s specialist LLM.
 - **Responder prompt** — Instructions for synthesizing tool results into a natural language answer.
 - **Summarizer prompt** — Instructions for compressing conversation history into 2-3 sentences.
 
@@ -117,8 +117,8 @@ The three core node functions plus routing logic:
 **`executor_node`** — The "hands" of the agent.
 - Identifies ready tasks (all dependencies satisfied)
 - Runs them in parallel via `asyncio.gather` with a concurrency cap
-- For **LLM tools**: calls `agent.run(user_msg, sub_task, prior_results)`
-- For **function tools**: calls `agent.call(params)`
+- For **LLM tools**: calls `agent.run(user_msg, sub_task, prior_results, planner_params=task["params"], context_summary=...)`
+- For **function tools**: calls `agent.call(task["params"])`
 - Collects results, trace entries, and any errors
 - Wraps every call in `asyncio.wait_for(timeout=...)` for safety
 
@@ -151,7 +151,7 @@ START → planner → executor → [route_after_executor]
 **What it does:** Provides the base classes and registry for all tools:
 
 - **`ToolSpec`** — Declarative metadata (name, type, purpose, schemas, TTL)
-- **`BaseToolAgent`** — LLM tools: semaphore → LLM param extraction → release → API call, with retry
+- **`BaseToolAgent`** — LLM tools: try planner `params` first (`_tool_executer`); on failure or missing args, tool LLM (semaphore during LLM only) produces JSON, then `_tool_executer` again; outer attempts capped by `executor.max_tool_attempts` (default 2); inner JSON-parse retries use per-agent `max_retries`
 - **`BaseFunctionTool`** — Pure functions: planner provides structured params directly
 - **`AgentRegistry`** — Singleton registry populated by `@register` decorators at import time
 
@@ -167,21 +167,25 @@ START → planner → executor → [route_after_executor]
 
 ## Tool Types: Two Execution Paths
 
-### LLM Tools (weather, web_search)
+### LLM Tools (weather, web_search, calculator, unit_converter)
 
 ```
-planner sets sub_task (natural language)
+planner sets sub_task + params (structured JSON per tool input_schema)
     │
     ▼
-executor calls agent.run(user_msg, sub_task, prior_results)
+executor calls agent.run(..., planner_params, context_summary)
     │
-    ├── Acquire LLM semaphore
-    ├── LLM extracts structured API params from sub_task
-    ├── Release LLM semaphore
-    └── Call external API with extracted params
+    ├── If params present: _tool_executer(params) first (no tool LLM)
+    │       └── on success → done
+    │       └── on exception → if attempts remain, tool LLM runs with user request,
+    │           conversation summary, sub-task, prior results, error, previous params
+    ├── If params missing/empty: tool LLM produces JSON first
+    ├── Acquire LLM semaphore only around the tool LLM call
+    └── Backend: HTTP API, safe eval, or conversion (+ currency API when needed)
+    Loop until success or executor.max_tool_attempts (default 2 full cycles)
 ```
 
-### Function Tools (calculator, unit_converter)
+### Function Tools (optional — `BaseFunctionTool`)
 
 ```
 planner sets params (structured JSON)
@@ -189,7 +193,7 @@ planner sets params (structured JSON)
     ▼
 executor calls agent.call(params)
     │
-    └── Execute pure computation (no LLM, no semaphore)
+    └── Execute pure computation with no extraction LLM (no semaphore for that step)
 ```
 
 ## Error Recovery Flow

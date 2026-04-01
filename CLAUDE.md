@@ -25,7 +25,7 @@ A **Multi-Tool Agent REST API** that accepts natural language tasks, plans and e
 
 ## Agent Tools
 Implement at least 3 as real functions (not mocks):
-- `calculator` — safely evaluate math expressions
+- `calculator` — planner supplies `params.expression`; tool LLM only on missing/wrong args or eval failure (`executor.max_tool_attempts`)
 - `weather` — fetch current weather for a city
 - `web_search` — search the web and return a summary
 - `unit_converter` — convert between length, weight, temperature, currency
@@ -40,6 +40,10 @@ Implement at least 3 as real functions (not mocks):
 - `app/agent/` — LangGraph graph, nodes, tools
 - `app/api/` — FastAPI routes
 - `app/db/` — SQLAlchemy models + persistence
+
+## LLM provider (env, not YAML keys)
+
+- Set **`LLM_PROVIDER`** in `.env` to `openai` (default) or `ollama`. The loader merges `config/shared.yaml` with `config/openai.yaml` or `config/ollama.yaml` (see `agent/yaml_config.py`). There is no `LLM_PROVIDER` key inside the YAML files.
 
 ## Conventions
 - Type hints on all functions

@@ -1,0 +1,15 @@
+# Optional override: use pre-built API + web images from a registry instead of building locally.
+# 1. Build and push (maintainer): see docs/project-instruction/docker.md
+# 2. Copy to docker-compose.images.yml, replace YOUR_REGISTRY/... tags.
+# 3. docker compose -f docker-compose.yml -f docker-compose.images.yml pull
+# 4. docker compose -f docker-compose.yml -f docker-compose.images.yml up -d
+#
+# `build: null` drops the build section from the base compose file (Compose v2.24+).
+
+services:
+  api:
+    image: YOUR_REGISTRY/tufin-agent-api:latest
+    build: null
+  web:
+    image: YOUR_REGISTRY/tufin-agent-web:latest
+    build: null

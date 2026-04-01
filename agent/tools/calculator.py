@@ -1,4 +1,4 @@
-"""Calculator tool — pure function, safe math expression evaluator."""
+"""Calculator tool — LLM extracts the expression, then safe deterministic evaluation."""
 
 from __future__ import annotations
 
@@ -9,16 +9,36 @@ import operator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from agent.tools.base import BaseFunctionTool, ToolSpec, registry
+from agent.tools.base import BaseToolAgent, ToolSpec, registry
 
 SPEC = ToolSpec(
     name="calculator",
-    type="function",
-    purpose="Safely evaluate a mathematical expression and return the numeric result.",
+    type="llm",
+    purpose="Evaluate a mathematical expression and return the numeric result.",
     output_schema={"result": float},
-    input_schema={"expression": "str — a mathematical expression (e.g. '42 * 18', 'sqrt(144)')"},
+    input_schema={
+        "expression": "str — math expression to evaluate (e.g. '42 * 18', 'sqrt(144)')",
+    },
+    system_prompt=(
+        "You output JSON for the calculator's safe evaluator. The planner should already "
+        "have filled 'params' with a correct expression; you are used when params are "
+        "missing or when evaluation failed — then infer or fix the expression from the "
+        "user request, conversation summary, sub-task, prior tool results, and any error "
+        "message.\n\n"
+        "Output ONLY a JSON object with this field:\n"
+        '  {"expression": "<single mathematical expression>"}\n\n'
+        "Rules:\n"
+        "- The expression must use only numbers, + - * / **, parentheses, and allowed "
+        "functions: sqrt, abs, round, sin, cos, tan, log, log10, ceil, floor.\n"
+        "- Constants pi and e are allowed as names.\n"
+        "- If prior results contain a number needed for the next step, substitute it into "
+        "the expression.\n"
+        "- Output raw JSON only — no markdown, no explanation.\n"
+    ),
     default_ttl_seconds=0,
 )
+
+CALCULATOR_SYSTEM = SPEC.system_prompt
 
 _SAFE_OPS = {
     ast.Add: operator.add,
@@ -101,10 +121,13 @@ def _safe_eval(expression: str) -> float:
 
 
 @registry.register(SPEC)
-class CalculatorTool(BaseFunctionTool):
+class CalculatorAgent(BaseToolAgent):
+    SYSTEM = CALCULATOR_SYSTEM
 
-    async def call(self, params: dict[str, Any]) -> dict[str, Any]:
-        expression = params["expression"]
+    async def _tool_executer(self, params: dict[str, Any]) -> dict[str, Any]:
+        expression = params.get("expression", "")
+        if not expression or not str(expression).strip():
+            raise ValueError("Missing or empty 'expression' in extracted params")
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(_pool, _safe_eval, expression)
+        result = await loop.run_in_executor(_pool, _safe_eval, str(expression).strip())
         return {"result": result}

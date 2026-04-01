@@ -1,6 +1,9 @@
 """Ordered startup sequence — enforces correct initialization order.
 
 Import order matters: yaml_config -> tools autodiscovery -> prompts -> llm -> tool_cache -> graph.
+
+Provider selection is fixed at process startup: set LLM_PROVIDER in .env to ``openai`` (default)
+or ``ollama``. See ``config/shared.yaml`` and ``config/openai.yaml`` / ``config/ollama.yaml``.
 """
 
 from __future__ import annotations

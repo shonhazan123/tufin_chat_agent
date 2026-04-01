@@ -35,8 +35,8 @@ def _make_aiohttp_mock(json_data):
 
 
 @pytest.mark.asyncio
-async def test_call_api_returns_schema(weather_agent):
-    """_call_api should return all required output fields (WeatherAPI path)."""
+async def test_tool_executer_returns_schema(weather_agent):
+    """_tool_executer should return all required output fields (WeatherAPI path)."""
     json_data = {
         "current": {
             "temp_c": 22.0,
@@ -48,7 +48,7 @@ async def test_call_api_returns_schema(weather_agent):
     mock_session = _make_aiohttp_mock(json_data)
 
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        result = await weather_agent._call_api({"city": "London"})
+        result = await weather_agent._tool_executer({"city": "London"})
 
     assert result["temp_c"] == 22.0
     assert result["temp_f"] == 71.6
@@ -57,7 +57,7 @@ async def test_call_api_returns_schema(weather_agent):
 
 
 @pytest.mark.asyncio
-async def test_call_api_default_city(weather_agent):
+async def test_tool_executer_default_city(weather_agent):
     """Missing city param should default to London."""
     json_data = {
         "current": {
@@ -70,6 +70,6 @@ async def test_call_api_default_city(weather_agent):
     mock_session = _make_aiohttp_mock(json_data)
 
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        result = await weather_agent._call_api({})
+        result = await weather_agent._tool_executer({})
 
     assert result["city_name"] == "London"
