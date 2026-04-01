@@ -7,12 +7,13 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agent.context import conversation_context
 from agent.yaml_config import load_config
 from app.cache.redis_cache import RedisCache
 from app.db.models import Task, TaskStatus
 from app.db.task_repository import TaskRepository
+from app.integrations.agent_runner import record_assistant_and_schedule_conversation_summary, run_agent_task
 from app.settings import Settings
-from app.integrations.agent_runner import run_agent_task
 from app.schemas.task import TaskResponse
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,8 @@ class TaskService:
         if cached is not None:
             final_answer = str(cached.get("final_answer", ""))
             trace = list(cached.get("trace", []))
+            conversation_context.add_user(normalized)
+            record_assistant_and_schedule_conversation_summary(final_answer)
             await self._repo.complete(
                 task.id,
                 final_answer,

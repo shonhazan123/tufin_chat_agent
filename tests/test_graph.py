@@ -209,6 +209,58 @@ async def test_route_done_when_all_complete(mock_llm_factory):
 
 
 @pytest.mark.asyncio
+async def test_route_done_when_empty_plan(mock_llm_factory):
+    """No planner tasks (e.g. greeting): executor adds nothing; route goes to responder."""
+    from agent.graph_nodes import executor_node, route_after_executor
+
+    state = {
+        "task": "hi",
+        "context_summary": "",
+        "plan": [],
+        "results": {},
+        "trace": [],
+        "retry_count": 0,
+        "error_context": "",
+        "failure_flag": False,
+    }
+    exec_out = await executor_node(state)
+    assert exec_out == {}
+    state.update(exec_out)
+    assert route_after_executor(state) == "done"
+
+
+@pytest.mark.asyncio
+async def test_response_node_without_tools(mock_llm_factory):
+    """Responder runs with empty results for conversational turns."""
+    from agent.graph_nodes import build_llm, response_node
+
+    build_llm("responder")
+    mock_llm_factory["responder"].ainvoke = AsyncMock(
+        return_value=_mock_llm_response("Hello! How can I help you today?")
+    )
+
+    state = {
+        "task": "hi",
+        "context_summary": "Earlier: user asked about the weather.",
+        "plan": [],
+        "results": {},
+        "trace": [],
+        "response": "",
+        "retry_count": 0,
+        "error_context": "",
+        "failure_flag": False,
+    }
+
+    out = await response_node(state)
+    assert "Hello" in out["response"]
+    call = mock_llm_factory["responder"].ainvoke.call_args
+    messages = call[0][0]
+    human = messages[1]
+    assert "hi" in human.content
+    assert "Conversation context" in human.content
+
+
+@pytest.mark.asyncio
 async def test_failure_flag_on_max_retries(mock_llm_factory):
     """After max retries, route should return 'fail'."""
     from agent.graph_nodes import mark_failure_node, route_after_executor

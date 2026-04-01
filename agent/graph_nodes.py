@@ -65,8 +65,15 @@ async def executor_node(state: dict[str, Any]) -> dict[str, Any]:
     A task is "ready" when all its dependencies are already in results.
     LLM tools: agent.run(..., planner_params=task['params'], context_summary=...).
     Function tools (if any): agent.call(task['params']).
+
+    If the planner produced no tasks (empty plan), there is nothing to run; return
+    no state updates so routing sends the run straight to the response node.
     """
-    plan = state["plan"]
+    plan = state.get("plan") or []
+    if not plan:
+        logger.info("Executor: empty plan — skipping tools; routing will go to responder")
+        return {}
+
     results = state.get("results") or {}
     cfg = load_config()
     timeout = cfg["executor"]["tool_timeout_seconds"]
@@ -145,6 +152,9 @@ def route_after_executor(state: dict[str, Any]) -> str:
     """Routing function for the conditional edge after executor_node.
 
     Returns one of: "continue", "retry", "fail", "done".
+
+    Empty plan (no tools) → "done" immediately so the graph reaches the responder
+    without looping the executor.
     """
     if state.get("error_context"):
         max_retries = load_config()["graph"]["max_retries"]
@@ -153,6 +163,9 @@ def route_after_executor(state: dict[str, Any]) -> str:
         return "fail"
 
     plan = state.get("plan") or []
+    if not plan:
+        return "done"
+
     results = state.get("results") or {}
     completed = set(results.keys())
     if any(t["id"] not in completed for t in plan):
@@ -176,17 +189,25 @@ async def response_node(state: dict[str, Any]) -> dict[str, Any]:
 
     if state.get("failure_flag"):
         content = (
-            f"Task: {state['task']}\n\n"
+            f"User message: {state['task']}\n\n"
             f"The system could not complete this task after multiple retries.\n"
             f"Last error: {state.get('error_context', 'Unknown')}\n\n"
             "Generate a polite apology and suggest the user rephrase or try again."
         )
     else:
-        content = (
-            f"Task: {state['task']}\n\n"
-            f"Tool results:\n{json.dumps(state.get('results') or {}, indent=2, default=str)}\n\n"
-            f"Execution trace:\n{json.dumps(state.get('trace') or [], indent=2, default=str)}"
+        parts = [f"User message: {state['task']}"]
+        ctx = (state.get("context_summary") or "").strip()
+        if ctx:
+            parts.append(f"[Conversation context]\n{ctx}")
+        parts.append(
+            "Tool results (may be empty if the planner needed no tools):\n"
+            f"{json.dumps(state.get('results') or {}, indent=2, default=str)}"
         )
+        parts.append(
+            "Execution trace:\n"
+            f"{json.dumps(state.get('trace') or [], indent=2, default=str)}"
+        )
+        content = "\n\n".join(parts)
 
     result = await asyncio.wait_for(
         llm.ainvoke([

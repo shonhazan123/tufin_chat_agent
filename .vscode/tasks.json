@@ -1,0 +1,28 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "docker: Redis up",
+      "type": "shell",
+      "command": "docker compose up redis -d",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "windows": {
+        "options": {
+          "cwd": "${workspaceFolder}",
+          "env": {
+            "Path": "${env:Path};C:\\Program Files\\Docker\\Docker\\resources\\bin"
+          }
+        }
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared",
+        "showReuseMessage": false,
+        "clear": false
+      }
+    }
+  ]
+}

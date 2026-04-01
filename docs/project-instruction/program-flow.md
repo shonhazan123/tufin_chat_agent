@@ -13,7 +13,7 @@ Initialization happens in strict order to avoid empty prompt constants and circu
 6. agent/tool_cache.py    → init_llm_cache() sets up SQLiteCache
 7. agent/context.py        → conversation_context singleton created
 8. agent/graph.py          → LangGraph compiled
-9. app/main.py             → FastAPI lifespan: init SQLite tables, Redis client, then `agent.startup.startup()`; uvicorn starts (see [docker.md](docker.md) for containerized Redis + API + static UI)
+9. app/main.py             → FastAPI lifespan: init SQLite tables, Redis client, then `agent.startup.startup()`; uvicorn starts (see [docker.md](docker.md) for containers; [local-debug.md](local-debug.md) for debugging API + agent with the UI on Vite)
 ```
 
 ## Request Lifecycle
@@ -22,7 +22,7 @@ Initialization happens in strict order to avoid empty prompt constants and circu
 API receives POST /api/v1/task with { "task": "..." }
   │
   ├── Insert Task row (pending) in SQLite; optional Redis cache lookup by normalized task hash
-  ├── On cache hit: update row from cached final_answer + trace; return (no graph run)
+  ├── On cache hit: update row from cached final_answer + trace; add_user + record_assistant_and_schedule_conversation_summary (background dialogue summarization); return (no graph run)
   ├── On miss: conversation_context.add_user(task)
   │
   ▼
@@ -47,22 +47,26 @@ graph.ainvoke({
   │
   ▼
 ┌─ executor_node (wave loop) ────────────────────────────┐
-│  Finds ready tasks (all deps satisfied)                │
+│  Empty plan → return {} immediately (no tools)          │
+│  Else: find ready tasks (all deps satisfied)           │
 │  For LLM tools: agent.run(..., planner_params, context_summary) │
 │  For function tools (if any): agent.call(params)       │
 │  Runs all ready tasks via asyncio.gather()             │
-│  Returns {"results": {...}, "trace": [...]}            │
+│  Returns {"results": {...}, "trace": [...]}             │
 └────────────────────────────────────────────────────────-┘
   │
   ▼
 route_after_executor:
+  - empty plan → response_node (same as all_done for tools)
   - tasks_remain → back to executor_node
   - error → retry_router (re-plan if under max_retries)
   - all_done → response_node
   │
   ▼
 ┌─ response_node ────────────────────────────────────────┐
-│  Invokes responder LLM with all results + trace        │
+│  Invokes responder LLM with user message, optional     │
+│  context_summary, tool results + trace                 │
+│  Empty plan → no tools; responder answers conversationally│
 │  If failure_flag: returns polite error message          │
 │  Returns {"response": "natural language answer"}       │
 └────────────────────────────────────────────────────────-┘
@@ -70,10 +74,9 @@ route_after_executor:
   ▼
 Graph returns to API layer
   │
+  ├── run_agent_task: record_assistant_and_schedule_conversation_summary(answer) — tagged [assistant msg]; `summarize_async` scheduled on event loop (does not await; does not add LLM latency to the graph result)
   ├── Update Task row in SQLite (completed / failed); SET Redis cache payload on success
-  ├── Send response to user (zero added latency)
-  ├── conversation_context.add_assistant(answer)
-  └── asyncio.create_task(context.summarize_async(llm))  ← fire-and-forget
+  └── Return TaskResponse to client
 ```
 
 ## State Flow Through Reducers
@@ -81,7 +84,7 @@ Graph returns to API layer
 | Field | Reducer | Behavior |
 |-------|---------|----------|
 | `task` | last-write-wins | Set once at graph entry, never overwritten |
-| `context_summary` | last-write-wins | Snapshot from conversation context |
+| `context_summary` | last-write-wins | Snapshot of `conversation_context.summary` at graph entry (prior dialogue only; updated after each completed reply via background summarization) |
 | `plan` | last-write-wins | Set by planner; **replaced** on retry with new plan |
 | `results` | `_merge` | Dict grows each executor wave (shallow merge) |
 | `trace` | `_append` | List grows each executor wave (concatenate) |

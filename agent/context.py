@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 from agent.prompts import SUMMARIZER_SYSTEM
 
+USER_MSG_PREFIX = "[user msg]\n"
+ASSISTANT_MSG_PREFIX = "[assistant msg]\n"
+
 
 class ConversationContext:
     """Rolling conversation context with summarization."""
@@ -26,12 +29,12 @@ class ConversationContext:
         self.summary: str = ""
 
     def add_user(self, text: str) -> None:
-        """Record a user message."""
-        self._human.append(HumanMessage(content=text))
+        """Record a user message (tagged for downstream summarizers)."""
+        self._human.append(HumanMessage(content=f"{USER_MSG_PREFIX}{text}"))
 
     def add_assistant(self, text: str) -> None:
-        """Record an assistant response."""
-        self._ai.append(AIMessage(content=text))
+        """Record an assistant response (tagged for downstream summarizers)."""
+        self._ai.append(AIMessage(content=f"{ASSISTANT_MSG_PREFIX}{text}"))
 
     def window(self) -> list[BaseMessage]:
         """Return interleaved chronological message list."""
@@ -45,7 +48,7 @@ class ConversationContext:
         return msgs
 
     async def summarize_async(self, llm) -> None:
-        """Fire-and-forget: compress conversation window into a summary.
+        """Compress tagged user/assistant window into the persistent summary.
 
         Failures are swallowed — we keep the old summary rather than raise.
         """
@@ -54,7 +57,7 @@ class ConversationContext:
                 SystemMessage(content=SUMMARIZER_SYSTEM),
                 *self.window(),
             ])
-            self.summary = result.content
+            self.summary = (result.content or "").strip()
         except Exception:
             logger.debug("Summarization failed, keeping previous summary", exc_info=True)
 

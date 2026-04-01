@@ -8,11 +8,13 @@ This project implements a multi-tool agent using a **two-tier plan-and-execute**
 
 ### Tier 1 — Planner LLM (Routing Intelligence)
 
-The planner receives the current user task plus a conversation context summary. It outputs a JSON execution plan declaring:
+The planner receives the current user task plus a conversation context summary. It outputs a JSON execution plan declaring (or an empty `tasks` array when a reply needs no tools — e.g. greetings or pure chat):
 - Which tools to call
 - For every tool: structured `params` whose keys match that tool’s input schema in the registry
 - For LLM-typed tools: a short natural language `sub_task` in addition to `params`
 - Dependency ordering via `depends_on` arrays
+
+The responder (see `RESPONDER_SYSTEM` in `agent/prompts.py`) acts as a personal assistant: it answers naturally when no tools ran, and synthesizes tool outputs into a friendly reply when they did.
 
 The planner knows: tool names, purposes, output field names, tool types (`llm` vs `function`), and each tool’s required `params` keys (see registry / planner prompt). Each tool’s system prompt defines how the tool LLM recovers when planner args are wrong or execution fails.
 
@@ -45,6 +47,8 @@ START → planner_node → executor_node ←────────────
                         └── all_done → response_node → END
 ```
 
+An **empty plan** (`tasks: []`) skips tool execution: `executor_node` returns immediately and `route_after_executor` routes to `response_node` (same as when every task has finished).
+
 ## LLM Provider Abstraction
 
 Both Ollama and OpenAI use `ChatOpenAI` from `langchain-openai`. At **process startup**, set `LLM_PROVIDER` in `.env` to `openai` (default) or `ollama`. The loader deep-merges `config/shared.yaml` with `config/openai.yaml` or `config/ollama.yaml` (connection + per-agent models). The `build_llm()` function is the sole instantiation point.
@@ -58,7 +62,7 @@ Both Ollama and OpenAI use `ChatOpenAI` from `langchain-openai`. At **process st
 | `agent/tool_cache.py` | Tool TTL cache + LangChain SQLiteCache |
 | `agent/state.py` | AgentState TypedDict with merge/append/add reducers |
 | `agent/prompts.py` | Planner, responder, summarizer system prompts |
-| `agent/context.py` | Conversation context singleton with summarization |
+| `agent/context.py` | Conversation context singleton: tagged `[user msg]` / `[assistant msg]` window; LLM dialogue summary only (no tool-execution narrative); refreshed in the background after each assistant reply |
 | `agent/graph_nodes.py` | planner_node, executor_node, response_node, routing |
 | `agent/graph.py` | LangGraph StateGraph compilation with conditional edges |
 | `agent/startup.py` | Ordered initialization sequence + validation |
@@ -67,7 +71,7 @@ Both Ollama and OpenAI use `ChatOpenAI` from `langchain-openai`. At **process st
 | `app/settings.py` | Pydantic `Settings` for API, database, Redis, CORS (env-driven) |
 | `app/main.py` | FastAPI factory: `/api/v1` routes, CORS, lifespan (SQLite init, Redis, `agent.startup`) |
 | `app/services/task_service.py` | Orchestrates task rows, Redis response cache, and `app/integrations/agent_runner` |
-| `app/db/` | Async SQLAlchemy + SQLite persistence for tasks and traces (`task_repository.py`, models, session) |
+| `app/db/` | Async SQLAlchemy + SQLite persistence for tasks and traces (`task_repository.py`, models, `session.py` parses `DATABASE_URL` with `make_url` so parent dirs work for Docker and local SQLite paths) |
 | `app/cache/redis_cache.py` | Redis GET/SET for cached final answers (TTL) |
 | `app/integrations/agent_runner.py` | Wraps `graph.ainvoke` + conversation context (same behavior as legacy `main.py`) |
 | `main.py` | Re-exports `app` for `uvicorn main:app` |
@@ -81,3 +85,7 @@ The [`chat-ui/`](../../chat-ui/) SPA calls **`POST /api/v1/task`** on the API (c
 ## Docker
 
 Redis, the FastAPI app, and the static chat UI are orchestrated with **Docker Compose**; SQLite task data is stored in a volume. See [docker.md](docker.md) for run commands, pre-built image workflow, and Ollama-on-host notes.
+
+## Local debugging
+
+Use **`.vscode/launch.json`** to run **uvicorn** under the debugger (breakpoints in `app/` and `agent/`). Run **`npm run dev`** in `chat-ui/` separately. See [local-debug.md](local-debug.md).

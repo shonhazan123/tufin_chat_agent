@@ -24,7 +24,7 @@ def build_graph():
             "continue" -> executor   (next wave of parallel tasks)
             "retry"    -> planner    (re-plan with error context)
             "fail"     -> mark_failure -> responder
-            "done"     -> responder -> END
+            "done"     -> responder -> END  (includes empty plan: no tools, straight to responder)
     """
     graph = StateGraph(AgentState)
 
