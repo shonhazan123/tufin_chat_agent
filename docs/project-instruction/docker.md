@@ -1,6 +1,6 @@
 # Docker deployment
 
-For a **short, beginner-friendly** install walkthrough (clone → `.env` → `docker compose`), see **[INSTALLATION.md](../../INSTALLATION.md)** at the repo root. This page is the full reference.
+Quick install steps: **[README.md](../../README.md)**. This file is the full Docker reference.
 
 Run the **API** (FastAPI + agent), **Redis** (response cache), and **chat UI** (nginx + static Vite build) with Docker Compose. Compose sets `DATABASE_URL` and `REDIS_URL` for in-container networking; SQLite data lives in a named volume. On each API start, **Alembic runs `upgrade head`** on that file (same URL as the app), so you do not need to run migrations manually after pulling schema changes. Old volumes created before observability columns existed are upgraded automatically (including a one-time stamp when `tasks` existed without `alembic_version`).
 
