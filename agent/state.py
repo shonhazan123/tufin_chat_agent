@@ -37,3 +37,5 @@ class AgentState(TypedDict):
     error_context: str
     user_facing_error: NotRequired[str]
     failure_flag: bool
+    planner_duration_ms: NotRequired[int]
+    responder_duration_ms: NotRequired[int]

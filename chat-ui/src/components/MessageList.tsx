@@ -6,9 +6,10 @@ import { TracePanel } from './TracePanel'
 
 type Props = {
   messages: ChatMessage[]
+  onDebug?: (taskId: string) => void
 }
 
-export function MessageList({ messages }: Props) {
+export function MessageList({ messages, onDebug }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -45,6 +46,7 @@ export function MessageList({ messages }: Props) {
                       latencyMs={m.latencyMs}
                       totalInputTokens={m.totalInputTokens}
                       totalOutputTokens={m.totalOutputTokens}
+                      onDebug={onDebug}
                     />
                   </>
                 )}

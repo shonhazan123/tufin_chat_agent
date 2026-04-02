@@ -22,6 +22,10 @@ tools:
   unit_converter:
     enabled: true
     currency_api_key: ${EXCHANGE_API_KEY}
+  database_query:
+    enabled: true
+    db_path: ./data/catalog.db
+    max_rows: 50
 
 cache:
   enabled: true
@@ -31,6 +35,7 @@ cache:
     weather: 300
     web_search: 600
     unit_converter: 60
+    database_query: 120
 
 executor:
   max_waves: 10

@@ -47,7 +47,7 @@ graph.ainvoke({
 │  HumanMessage: task + build_planner_context_block       │
 │  (recent ≤5 turns + rolling summary only; token cap)    │
 │  Invokes planner LLM → parses JSON plan                │
-│  Returns {"plan": [...tasks...]}                       │
+│  Returns {"plan": [...], "planner_duration_ms": ms}    │
 └────────────────────────────────────────────────────────-┘
   │
   ▼
@@ -57,6 +57,7 @@ graph.ainvoke({
 │  For LLM tools: agent.run(state=state, plan_task=task)   │
 │  For function tools (if any): agent.call(params)       │
 │  Runs all ready tasks via asyncio.gather()             │
+│  Each trace entry includes duration_ms and wave number  │
 │  Returns {"results": {...}, "trace": [...]}             │
 └────────────────────────────────────────────────────────-┘
   │
@@ -73,7 +74,7 @@ route_after_executor:
 │  user task + key facts + summary + tool results + trace  │
 │  Empty plan → no tools; responder answers conversationally│
 │  If failure_flag: returns polite error message          │
-│  Returns {"response": "natural language answer"}       │
+│  Returns {"response": "...", "responder_duration_ms": ms}│
 └────────────────────────────────────────────────────────-┘
   │
   ▼
@@ -92,7 +93,9 @@ Planner, responder, and tool LLM calls call `agent.usage.record_llm_message` so 
 |---------|----------|
 | **POST /api/v1/task** | Slim JSON: `task_id`, `final_answer`, `latency_ms`, `total_input_tokens`, `total_output_tokens`. No full graph blob. |
 | **GET /api/v1/tasks/{task_id}** | `TaskDetailResponse` includes `observability` (from `observability_json`): context snapshot, plan, results, executor trace, errors, per-LLM usage entries. |
-| **Chat UI** | Collapsible strip shows latency, token totals, and `task_id` (debug/monitoring; not the primary answer). |
+| **GET /api/v1/tasks/{task_id}/debug** | `TaskDebugResponse`: full task metadata (`task_text`, `status`, timestamps, `error_message`) plus a `reasoning_tree` — a structured tree of `ReasoningStep` nodes (planner, executor waves with per-tool children, responder). Each step carries `duration_ms`, token counts, input/output summaries, and wave number. |
+| **Chat UI — general** | Collapsible strip shows latency, token totals, and `task_id` (debug/monitoring; not the primary answer). |
+| **Chat UI — debug sidebar** | Opened via "Debug" button in the observability strip or the magnifying-glass icon in the header. Fetches `/debug` endpoint and renders the reasoning tree as an interactive, expandable step tree in a right-side panel. |
 | **Scope** | Wall-clock and tokens cover `graph.ainvoke` only, not post-response `summarize_async`. |
 
 ## State Flow Through Reducers
@@ -109,6 +112,8 @@ Planner, responder, and tool LLM calls call `agent.usage.record_llm_message` so 
 | `response` | last-write-wins | Set once by response_node |
 | `error_context` | last-write-wins | Latest error summary for logging; cleared on success |
 | `failure_flag` | last-write-wins | True when routing through `mark_failure_node` |
+| `planner_duration_ms` | last-write-wins | Wall-clock ms for the planner LLM call (set by `planner_node`) |
+| `responder_duration_ms` | last-write-wins | Wall-clock ms for the responder LLM call (set by `response_node`) |
 
 ## LLM Semaphore Behavior
 

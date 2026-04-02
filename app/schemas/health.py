@@ -9,3 +9,4 @@ class HealthResponse(BaseModel):
     status: str = Field(description="ok or degraded")
     sqlite: str = Field(description="ok or error")
     redis: str = Field(description="ok, error, or skipped")
+    agent: str = Field(description="ok or error — whether the LangGraph agent is compiled and ready")

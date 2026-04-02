@@ -34,3 +34,8 @@ agents:
     max_tokens: 256
     temperature: 0
     max_retries: 2
+  database_query:
+    model: gpt-4o-mini
+    max_tokens: 512
+    temperature: 0
+    max_retries: 2

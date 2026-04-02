@@ -1,4 +1,4 @@
-"""Health — SQLite and Redis connectivity."""
+"""Health — SQLite, Redis, and agent graph status."""
 
 from __future__ import annotations
 
@@ -35,12 +35,20 @@ async def health(request: Request) -> HealthResponse:
     else:
         redis_state = "skipped"
 
+    agent_state = "error"
+    try:
+        from agent.graph import get_graph
+        get_graph()
+        agent_state = "ok"
+    except Exception:
+        agent_state = "error"
+
     overall = "ok"
-    if sqlite_state != "ok":
+    if sqlite_state != "ok" or agent_state != "ok":
         overall = "degraded"
     elif redis_state == "error" and settings.redis_url and not settings.redis_optional:
         overall = "degraded"
     elif redis_state == "error" and settings.redis_url and settings.redis_optional:
         overall = "degraded"
 
-    return HealthResponse(status=overall, sqlite=sqlite_state, redis=redis_state)
+    return HealthResponse(status=overall, sqlite=sqlite_state, redis=redis_state, agent=agent_state)

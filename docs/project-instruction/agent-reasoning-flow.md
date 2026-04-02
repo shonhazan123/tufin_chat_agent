@@ -72,7 +72,7 @@ User Request
 
 ### `agent/llm.py` — LLM Factory
 
-**What it does:** The sole `ChatOpenAI` instantiation point. Builds one LLM instance per agent name (planner, responder, and each LLM-backed tool such as weather, web_search, calculator, unit_converter) with per-agent model/temperature/token settings. Manages the LLM concurrency semaphore (1 for Ollama, 5 for OpenAI).
+**What it does:** The sole `ChatOpenAI` instantiation point. Builds one LLM instance per agent name (planner, responder, and each LLM-backed tool such as weather, web_search, calculator, unit_converter, database_query) with per-agent model/temperature/token settings. Manages the LLM concurrency semaphore (1 for Ollama, 5 for OpenAI).
 
 ### `agent/state.py` — Graph State Definition
 
@@ -88,12 +88,15 @@ User Request
 | `response` | `str` | Set once by response node |
 | `error_context` | `str` | Latest error summary (for logs); cleared on success |
 | `failure_flag` | `bool` | True when execution failed and the graph uses the failure response path |
+| `planner_duration_ms` | `int` (NotRequired) | Wall-clock ms for the planner LLM call |
+| `responder_duration_ms` | `int` (NotRequired) | Wall-clock ms for the responder LLM call |
 
 ### `agent/prompts.py` — System Prompts
 
 **What it does:** Defines the fixed system prompts used as `SystemMessage` content. Each prompt uses Markdown-style **section headings** (Role, Objective or output contract, rules, format) so model behavior and human review stay aligned.
 
 - **Planner prompt** — Built lazily from the tool registry. Tells the planner LLM what tools exist, each tool’s input/output field names, and that every task must include structured `params` matching those schemas (plus `sub_task` for LLM-typed tools). The executor tries planner `params` before invoking each tool’s specialist LLM.
+  - Includes a **"Conversational context awareness"** section that instructs the planner to: (a) resolve follow-up pronouns/references (e.g. "it", "from it") using conversation memory, (b) prefer the same tool(s) used in the previous turn when the follow-up continues the same topic, (c) embed the resolved entity directly in `params`/`sub_task` instead of relying on pronouns.
 - **Responder prompt** — Instructions for synthesizing tool results into a natural language answer (grounding, no double computation when tools already returned a final value, failure tone).
 - **Summarizer prompt** — Strict JSON output: rolling `summary` plus merged `user_key_facts` (stable user attributes). Background refresh after each assistant reply.
 
@@ -101,7 +104,7 @@ LLM-backed tools use the same section pattern inside each `ToolSpec.system_promp
 
 ### `agent/context.py` — Conversation Memory
 
-**What it does:** Rolling window of the last 5 user and 5 assistant messages (tagged). Persists `summary` and `user_key_facts`. Snapshots are passed in graph state; **injection differs by node**: planner gets recent + summary (capped); tools get only rolling summary with `user_msg`; responder gets key facts + summary + current user message (capped).
+**What it does:** Rolling window of the last 5 user and 5 assistant messages (tagged). Persists `summary`, `user_key_facts`, and `last_tools_used` (list of tool names invoked in the most recent turn). Snapshots are passed in graph state; **injection differs by node**: planner gets recent + summary (capped); tools get only rolling summary with `user_msg`; responder gets key facts + summary + current user message (capped).
 
 ### `agent/memory_format.py` — Memory bundle
 
@@ -112,14 +115,16 @@ LLM-backed tools use the same section pattern inside each `ToolSpec.system_promp
 The three core node functions plus routing logic:
 
 **`planner_node`** — The "brain" of the agent.
-- Receives the task + planner memory (recent messages + `context_summary` only; capped)
+- Receives the task + planner memory (recent messages + `context_summary` only; capped) + `[Tools used in previous turn]` hint from `ConversationContext.last_tools_used`
 - Calls the planner LLM with the system prompt containing all available tools
 - Parses the JSON plan (with markdown fence stripping and error recovery)
-- Returns the task list for the executor
+- Times the LLM call and returns `planner_duration_ms` alongside the task list
 
 **`executor_node`** — The "hands" of the agent.
 - Identifies ready tasks (all dependencies satisfied)
-- Runs them in parallel via `asyncio.gather` with a concurrency cap
+- Computes the current wave number from existing trace entries
+- Runs ready tasks in parallel via `asyncio.gather` with a concurrency cap
+- Each tool call is individually timed (`duration_ms`) and tagged with the `wave` number in its trace entry
 - For **LLM tools**: calls `agent.run(state=state, plan_task=task)` (tools receive a **`ToolInvocation`** with `user_msg`, `sub_task`, `prior_results`, `planner_params`, `context_summary` derived from state + task)
 - For **function tools**: calls `agent.call(task["params"])`
 - Collects results, trace entries, and any errors
@@ -170,7 +175,7 @@ START → planner → executor → [route_after_executor]
 
 ## Tool Types: Two Execution Paths
 
-### LLM Tools (weather, web_search, calculator, unit_converter)
+### LLM Tools (weather, web_search, calculator, unit_converter, database_query)
 
 ```
 planner sets sub_task + params (structured JSON per tool input_schema)
@@ -183,8 +188,10 @@ subclass _tool_executor(inv) — tool-specific: optional single self.llm.ainvoke
     then backend
     │
     ├── Acquire LLM semaphore around that tool LLM call
-    └── Backend: HTTP API, safe eval, or conversion (+ currency API when needed)
+    └── Backend: HTTP API, safe eval, conversion, or SQL execution
 ```
+
+**database_query variant:** Unlike other LLM tools where the LLM is a fallback for missing params, the database_query tool's LLM **always** runs because SQL generation is its core function. The planner provides a natural-language `question` param; the tool LLM converts it into a validated SQL SELECT query that runs against `data/catalog.db` (products and orders tables).
 
 ### Function Tools (optional — `BaseFunctionTool`)
 

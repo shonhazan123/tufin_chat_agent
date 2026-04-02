@@ -40,3 +40,9 @@ agents:
     temperature: 0
     max_retries: 3
     num_ctx: 2048
+  database_query:
+    model: qwen2.5:7b-instruct-q4_K_M
+    max_tokens: 512
+    temperature: 0
+    max_retries: 3
+    num_ctx: 4096

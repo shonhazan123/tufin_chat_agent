@@ -78,7 +78,7 @@ For a detailed walkthrough of the reasoning flow, see [agent-reasoning-flow.md](
 
 ## Chat UI Shell
 
-The [`chat-ui/`](../../chat-ui/) SPA calls **`POST /api/v1/task`** (slim metrics + answer) and can load full traces via **`GET /api/v1/tasks/{task_id}`**. Base URL: `VITE_API_BASE_URL`. See [frontend-shell.md](frontend-shell.md).
+The [`chat-ui/`](../../chat-ui/) SPA calls **`POST /api/v1/task`** (slim metrics + answer) and can load full traces via **`GET /api/v1/tasks/{task_id}`**. A dedicated debug endpoint **`GET /api/v1/tasks/{task_id}/debug`** returns `TaskDebugResponse` with full task metadata and a `reasoning_tree` of structured steps. The UI renders this in a **debug sidebar** that slides in from the right, showing the planner, executor waves (with per-tool timing), and responder as an interactive, expandable tree. Base URL: `VITE_API_BASE_URL`. See [frontend-shell.md](frontend-shell.md).
 
 ## Docker
 

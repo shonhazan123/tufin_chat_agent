@@ -17,17 +17,19 @@ _TEST_CONFIG = {
         "web_search": {"model": "test", "max_tokens": 512, "temperature": 0, "num_ctx": 4096, "max_retries": 3},
         "calculator": {"model": "test", "max_tokens": 256, "temperature": 0, "num_ctx": 2048, "max_retries": 3},
         "unit_converter": {"model": "test", "max_tokens": 256, "temperature": 0, "num_ctx": 2048, "max_retries": 3},
+        "database_query": {"model": "test", "max_tokens": 512, "temperature": 0, "num_ctx": 4096, "max_retries": 3},
     },
     "tools": {
         "calculator": {"enabled": True},
         "weather": {"enabled": True, "api_key": "test-key", "timeout_seconds": 5},
         "web_search": {"enabled": True, "api_key": "test-key", "max_results": 3},
         "unit_converter": {"enabled": True, "currency_api_key": "test-key"},
+        "database_query": {"enabled": True, "db_path": ":memory:", "max_rows": 50},
     },
     "cache": {
         "enabled": False,
         "llm_cache_path": "./.cache/test.db",
-        "tool_ttls": {"calculator": 0, "weather": 300, "web_search": 600, "unit_converter": 60},
+        "tool_ttls": {"calculator": 0, "weather": 300, "web_search": 600, "unit_converter": 60, "database_query": 0},
     },
     "executor": {
         "max_waves": 10,
@@ -44,6 +46,7 @@ _CONFIG_PATCH_TARGETS = [
     "agent.tools.weather.load_config",
     "agent.tools.web_search.load_config",
     "agent.tools.unit_converter.load_config",
+    "agent.tools.database_query.load_config",
     "agent.graph_nodes.load_config",
     "app.services.task_service.load_config",
     "app.integrations.agent_runner.load_config",

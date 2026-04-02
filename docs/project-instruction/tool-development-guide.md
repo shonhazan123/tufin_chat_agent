@@ -108,6 +108,15 @@ cache:
 - **Functions:** include `sqrt`, `cbrt` (real cube root, including negative inputs), `abs`, `round`, `sin`, `cos`, `tan`, `log`, `log10`, `ceil`, `floor`, plus constants `pi` and `e`.
 - The tool `ToolSpec.system_prompt` and `input_schema` describe this dialect to the planner and to the tool’s own param-fill LLM.
 
+### Database query tool (`agent/tools/database_query.py`)
+
+- **LLM-to-SQL pattern:** Unlike other tools where the LLM is a fallback for missing params, the database query tool's LLM always runs because SQL generation IS its core function. The planner provides a natural-language `question`; the tool LLM converts it into a SQL SELECT statement.
+- **Separate catalog database:** The tool queries `data/catalog.db` (fictional product catalog), completely separate from the app's `data/app.db`. Tables: `products` (id, name, category, price, stock_quantity, description, created_at) and `orders` (id, product_id, customer_name, quantity, total_price, status, order_date).
+- **SQL validation:** Generated SQL is validated before execution — must be a SELECT statement, no mutating keywords (INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, etc.), no multiple statements (semicolons).
+- **Row limit enforcement:** A LIMIT clause is appended if the query does not include one (default 50 rows, configurable via `tools.database_query.max_rows`).
+- **Auto-seeding:** If `data/catalog.db` does not exist at tool registration time, the tool auto-seeds it using `scripts/seed_catalog.py`. The seeder can also be run standalone: `python scripts/seed_catalog.py`.
+- The tool uses `aiosqlite` for async database access.
+
 ### User-facing tool errors (`UserFacingToolError`)
 
 - Tools may raise `UserFacingToolError` from `agent.tools.base` with a short, user-safe message (no stack traces).

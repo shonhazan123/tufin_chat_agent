@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from agent.context import conversation_context
 from agent.llm import build_llm
 from agent.usage import record_llm_message
 from agent.memory_format import (
@@ -30,6 +32,11 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
     cfg = load_config()
 
     parts = [f"Task: {state['task']}"]
+
+    last_tools = conversation_context.last_tools_used
+    if last_tools:
+        parts.append(f"[Tools used in previous turn]: {', '.join(last_tools)}")
+
     planner_mem = build_planner_context_block(
         recent_messages=(state.get("recent_messages_text") or "").strip(),
         context_summary=(state.get("context_summary") or "").strip(),
@@ -38,6 +45,7 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
     if planner_mem:
         parts.append(f"[Planner memory — last messages + summary; ~{PLANNER_MEMORY_MAX_TOKENS} token budget]\n{planner_mem}")
 
+    t0 = time.perf_counter()
     result = await asyncio.wait_for(
         llm.ainvoke([
             SystemMessage(content=system_prompt),
@@ -45,6 +53,7 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
         ]),
         timeout=cfg["executor"]["tool_timeout_seconds"],
     )
+    planner_ms = int((time.perf_counter() - t0) * 1000)
     record_llm_message("planner", result)
 
     text = result.content.strip()
@@ -56,11 +65,11 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         err = f"Planner JSON parse error: {exc}"
         logger.error("Planner returned invalid JSON: %s", exc)
-        return {"error_context": err}
+        return {"error_context": err, "planner_duration_ms": planner_ms}
 
     tasks = raw.get("tasks", raw) if isinstance(raw, dict) else raw
     logger.info("Planner produced %d task(s)", len(tasks))
-    return {"plan": tasks, "error_context": ""}
+    return {"plan": tasks, "error_context": "", "planner_duration_ms": planner_ms}
 
 
 async def executor_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -92,6 +101,10 @@ async def executor_node(state: dict[str, Any]) -> dict[str, Any]:
     if not ready:
         return {}
 
+    existing_trace = state.get("trace") or []
+    seen_waves = {e.get("wave", 0) for e in existing_trace if isinstance(e, dict)}
+    wave = (max(seen_waves) + 1) if seen_waves else 1
+
     concurrency_cap = cfg["executor"].get("max_parallel_tools", len(ready))
     sem = asyncio.Semaphore(concurrency_cap)
 
@@ -99,6 +112,7 @@ async def executor_node(state: dict[str, Any]) -> dict[str, Any]:
         tid = task["id"]
         agent = registry.get(task["agent"])
         async with sem:
+            t0 = time.perf_counter()
             try:
                 if task["type"] == "llm":
                     res = await asyncio.wait_for(
@@ -110,9 +124,15 @@ async def executor_node(state: dict[str, Any]) -> dict[str, Any]:
                         agent.call(task["params"]),
                         timeout=timeout,
                     )
-                trace = {"task_id": tid, "agent": task["agent"], "status": "ok", "result": res}
+                duration_ms = int((time.perf_counter() - t0) * 1000)
+                trace = {
+                    "task_id": tid, "agent": task["agent"],
+                    "status": "ok", "result": res,
+                    "duration_ms": duration_ms, "wave": wave,
+                }
                 return tid, res, trace
             except Exception as exc:
+                duration_ms = int((time.perf_counter() - t0) * 1000)
                 logger.exception(
                     "Task %s (%s) failed after tool-level retries",
                     tid,
@@ -120,11 +140,10 @@ async def executor_node(state: dict[str, Any]) -> dict[str, Any]:
                 )
                 ufe = isinstance(exc, UserFacingToolError)
                 trace = {
-                    "task_id": tid,
-                    "agent": task["agent"],
-                    "status": "error",
-                    "error": str(exc),
+                    "task_id": tid, "agent": task["agent"],
+                    "status": "error", "error": str(exc),
                     "user_facing": ufe,
+                    "duration_ms": duration_ms, "wave": wave,
                 }
                 return tid, None, trace
 
@@ -245,12 +264,13 @@ async def response_node(state: dict[str, Any]) -> dict[str, Any]:
             "Tool results (may be empty if the planner needed no tools):\n"
             f"{json.dumps(state.get('results') or {}, indent=2, default=str)}"
         )
-        parts.append(
-            "Execution trace:\n"
-            f"{json.dumps(state.get('trace') or [], indent=2, default=str)}"
-        )
+        # parts.append(
+        #     "Execution trace:\n"
+        #     f"{json.dumps(state.get('trace') or [], indent=2, default=str)}"
+        # )
         content = "\n\n".join(parts)
 
+    t0 = time.perf_counter()
     result = await asyncio.wait_for(
         llm.ainvoke([
             SystemMessage(content=RESPONDER_SYSTEM),
@@ -258,6 +278,7 @@ async def response_node(state: dict[str, Any]) -> dict[str, Any]:
         ]),
         timeout=cfg["executor"]["tool_timeout_seconds"],
     )
+    responder_ms = int((time.perf_counter() - t0) * 1000)
     record_llm_message("responder", result)
 
-    return {"response": result.content}
+    return {"response": result.content, "responder_duration_ms": responder_ms}

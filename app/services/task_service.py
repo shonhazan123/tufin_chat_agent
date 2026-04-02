@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from collections import defaultdict
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +17,7 @@ from app.db.models import Task, TaskStatus
 from app.db.task_repository import TaskRepository
 from app.integrations.agent_runner import record_assistant_and_schedule_conversation_summary, run_agent_task
 from app.settings import Settings
-from app.schemas.task import TaskDetailResponse, TaskSubmitResponse
+from app.schemas.task import ReasoningStep, TaskDebugResponse, TaskDetailResponse, TaskSubmitResponse
 
 logger = logging.getLogger(__name__)
 
@@ -158,3 +161,215 @@ class TaskService:
             total_output_tokens=task.total_output_tokens,
             observability=task.observability_json or {},
         )
+
+    def to_debug_response(self, task: Task) -> TaskDebugResponse:
+        tree = _build_reasoning_tree(task.observability_json or {}, task.task_text or "")
+        return TaskDebugResponse(
+            task_id=task.id,
+            task_text=task.task_text or "",
+            status=task.status.value if task.status else "unknown",
+            final_answer=task.final_answer or "",
+            error_message=task.error_message,
+            created_at=task.created_at,
+            completed_at=task.completed_at,
+            latency_ms=task.latency_ms,
+            total_input_tokens=task.total_input_tokens,
+            total_output_tokens=task.total_output_tokens,
+            reasoning_tree=tree,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Reasoning tree builder — transforms observability_json into ReasoningStep[]
+# ---------------------------------------------------------------------------
+
+
+def _json_pretty(obj: Any) -> str:
+    return json.dumps(obj, indent=2, default=str, ensure_ascii=False)
+
+
+def _pop_tokens_for_role(llm_calls: list[dict[str, Any]], role: str) -> dict[str, int | None] | None:
+    """Find and remove the first matching llm_call entry; return its tokens."""
+    for i, call in enumerate(llm_calls):
+        if call.get("role") == role:
+            u = call.get("usage") or {}
+            llm_calls.pop(i)
+            return {"input": u.get("input_tokens"), "output": u.get("output_tokens")}
+    return None
+
+
+def _build_planner_input(obs: dict[str, Any], task_text: str) -> str:
+    """Full structured input that was fed into the planner LLM."""
+    ctx = obs.get("context_at_start") or {}
+    sections: list[str] = []
+
+    sections.append(f"[Task]\n{task_text}")
+
+    summary = ctx.get("context_summary", "").strip()
+    if summary:
+        sections.append(f"[Context Summary]\n{summary}")
+
+    facts = ctx.get("user_key_facts", "").strip()
+    if facts:
+        sections.append(f"[User Key Facts]\n{facts}")
+
+    recent = ctx.get("recent_messages_text", "").strip()
+    if recent:
+        sections.append(f"[Recent Messages]\n{recent}")
+
+    return "\n\n".join(sections)
+
+
+def _build_tool_input(plan_task: dict[str, Any]) -> str:
+    """Full structured input for a tool: sub_task, params, and dependency info."""
+    sections: list[str] = []
+    sub = plan_task.get("sub_task", "")
+    if sub:
+        sections.append(f"[Sub-task]\n{sub}")
+
+    params = plan_task.get("params")
+    if params:
+        sections.append(f"[Params]\n{_json_pretty(params)}")
+
+    deps = plan_task.get("depends_on")
+    if deps:
+        sections.append(f"[Depends On]\n{', '.join(deps)}")
+
+    agent = plan_task.get("agent", "")
+    tool_type = plan_task.get("type", "")
+    if agent or tool_type:
+        sections.append(f"[Tool]\nagent: {agent}  type: {tool_type}")
+
+    return "\n\n".join(sections) if sections else "(no input data)"
+
+
+def _build_responder_input(obs: dict[str, Any]) -> str:
+    """Summarize what was fed into the responder LLM."""
+    sections: list[str] = []
+
+    ctx = obs.get("context_at_start") or {}
+    task = ctx.get("task", "").strip()
+    if task:
+        sections.append(f"[User Message]\n{task}")
+
+    facts = ctx.get("user_key_facts", "").strip()
+    if facts:
+        sections.append(f"[User Key Facts]\n{facts}")
+
+    summary = ctx.get("context_summary", "").strip()
+    if summary:
+        sections.append(f"[Context Summary]\n{summary}")
+
+    results = obs.get("results")
+    if results:
+        sections.append(f"[Tool Results]\n{_json_pretty(results)}")
+
+    trace = obs.get("executor_trace")
+    if trace:
+        sections.append(f"[Execution Trace]\n{_json_pretty(trace)}")
+
+    if obs.get("failure_flag"):
+        err = obs.get("error_context", "").strip()
+        ufe = obs.get("user_facing_error", "").strip()
+        if ufe:
+            sections.append(f"[User-Facing Error]\n{ufe}")
+        elif err:
+            sections.append(f"[Error Context]\n{err}")
+
+    return "\n\n".join(sections) if sections else "(no input data)"
+
+
+def _build_reasoning_tree(obs: dict[str, Any], task_text: str) -> list[ReasoningStep]:
+    """Build the ordered list of reasoning steps from observability_json."""
+    steps: list[ReasoningStep] = []
+    plan: list[dict] = obs.get("plan") or []
+    trace: list[dict] = obs.get("executor_trace") or []
+    results: dict = obs.get("results") or {}
+    llm_calls: list[dict] = list(obs.get("llm_calls") or [])
+
+    plan_by_id: dict[str, dict] = {t["id"]: t for t in plan if isinstance(t, dict) and "id" in t}
+
+    # --- 1. Planner step ---
+    planner_ms = obs.get("planner_duration_ms")
+    planner_label = f"Planner ({planner_ms} ms)" if planner_ms is not None else "Planner"
+
+    planner_input = _build_planner_input(obs, task_text)
+    planner_output = _json_pretty(plan) if plan else "Empty plan (no tools needed)"
+
+    steps.append(ReasoningStep(
+        id="planner",
+        label=planner_label,
+        node_type="planner",
+        status="ok" if not obs.get("error_context", "").startswith("Planner") else "error",
+        duration_ms=planner_ms,
+        tokens=_pop_tokens_for_role(llm_calls, "planner"),
+        input_summary=planner_input,
+        output_summary=planner_output,
+    ))
+
+    # --- 2. Executor waves ---
+    if trace:
+        waves: dict[int, list[dict]] = defaultdict(list)
+        for entry in trace:
+            w = entry.get("wave", 1)
+            waves[w].append(entry)
+
+        for wave_num in sorted(waves):
+            children: list[ReasoningStep] = []
+            for entry in waves[wave_num]:
+                tid = entry.get("task_id", "?")
+                agent_name = entry.get("agent", "unknown")
+                tool_ms = entry.get("duration_ms")
+                tool_label = f"{agent_name} ({tool_ms} ms)" if tool_ms is not None else agent_name
+                tool_status = entry.get("status", "ok")
+
+                plan_task = plan_by_id.get(tid, {})
+                tool_input = _build_tool_input(plan_task)
+
+                if tool_status == "ok":
+                    raw_result = entry.get("result") or results.get(tid)
+                    tool_output = _json_pretty(raw_result) if raw_result is not None else "(no result)"
+                else:
+                    tool_output = entry.get("error", "(unknown error)")
+
+                children.append(ReasoningStep(
+                    id=tid,
+                    label=tool_label,
+                    node_type="tool",
+                    status=tool_status,
+                    duration_ms=tool_ms,
+                    tokens=_pop_tokens_for_role(llm_calls, agent_name),
+                    input_summary=tool_input,
+                    output_summary=tool_output,
+                    wave=wave_num,
+                ))
+
+            wave_total_ms = sum(c.duration_ms or 0 for c in children)
+            steps.append(ReasoningStep(
+                id=f"wave_{wave_num}",
+                label=f"Executor Wave {wave_num} ({wave_total_ms} ms)",
+                node_type="tool",
+                status="error" if any(c.status == "error" for c in children) else "ok",
+                duration_ms=wave_total_ms or None,
+                wave=wave_num,
+                children=children,
+            ))
+
+    # --- 3. Responder step ---
+    responder_ms = obs.get("responder_duration_ms")
+    responder_label = f"Responder ({responder_ms} ms)" if responder_ms is not None else "Responder"
+    responder_input = _build_responder_input(obs)
+    final_text = obs.get("response", "")
+
+    steps.append(ReasoningStep(
+        id="responder",
+        label=responder_label,
+        node_type="responder",
+        status="ok" if not obs.get("failure_flag") else "error",
+        duration_ms=responder_ms,
+        tokens=_pop_tokens_for_role(llm_calls, "responder"),
+        input_summary=responder_input,
+        output_summary=final_text or None,
+    ))
+
+    return steps

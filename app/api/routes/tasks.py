@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.dependencies import get_task_service
 from app.middleware.auth import verify_api_key
-from app.schemas.task import TaskDetailResponse, TaskRequest, TaskSubmitResponse
+from app.schemas.task import TaskDebugResponse, TaskDetailResponse, TaskRequest, TaskSubmitResponse
 from app.services.task_service import TaskService
 
 router = APIRouter(tags=["tasks"])
@@ -39,3 +39,18 @@ async def get_task(
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
     return service.to_detail_response(task)
+
+
+@router.get(
+    "/tasks/{task_id}/debug",
+    response_model=TaskDebugResponse,
+    dependencies=[Depends(verify_api_key)],
+)
+async def get_task_debug(
+    task_id: UUID,
+    service: TaskService = Depends(get_task_service),
+) -> TaskDebugResponse:
+    task = await service.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    return service.to_debug_response(task)

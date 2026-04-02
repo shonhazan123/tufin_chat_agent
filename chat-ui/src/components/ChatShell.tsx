@@ -1,7 +1,8 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ChatMessage } from '../types'
 import { MessageList } from './MessageList'
 import { Composer } from './Composer'
+import { ReasoningSidebar } from './ReasoningSidebar'
 
 function newId() {
   return crypto.randomUUID()
@@ -15,9 +16,36 @@ function apiBase(): string {
   ).replace(/\/$/, '')
 }
 
+type HealthStatus = 'unknown' | 'ok' | 'degraded' | 'offline'
+
+const POLL_INTERVAL = 10_000
+
 export function ChatShell() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [pending, setPending] = useState(false)
+  const [debugTaskId, setDebugTaskId] = useState<string | null>(null)
+  const [health, setHealth] = useState<HealthStatus>('unknown')
+  const [agentReady, setAgentReady] = useState<boolean | null>(null)
+  const timerRef = useRef<ReturnType<typeof setInterval>>(null)
+
+  useEffect(() => {
+    const base = apiBase()
+    const check = async () => {
+      try {
+        const res = await fetch(`${base}/api/v1/health`)
+        if (!res.ok) { setHealth('offline'); setAgentReady(false); return }
+        const data = (await res.json()) as { status?: string; agent?: string }
+        setHealth(data.status === 'ok' ? 'ok' : 'degraded')
+        setAgentReady(data.agent === 'ok')
+      } catch {
+        setHealth('offline')
+        setAgentReady(false)
+      }
+    }
+    void check()
+    timerRef.current = setInterval(check, POLL_INTERVAL)
+    return () => { if (timerRef.current) clearInterval(timerRef.current) }
+  }, [])
 
   const send = useCallback((raw: string) => {
     const text = raw.trimEnd()
@@ -115,18 +143,64 @@ export function ChatShell() {
           <h1 className="text-lg font-medium tracking-tight text-[#fafafa]">
             Tufin Agent
           </h1>
-          <span
-            className="max-w-[14rem] truncate rounded-full border border-[#3f3f46] bg-[#1c1c1f] px-2.5 py-1 text-xs font-medium text-[#86efac]"
-            title={base}
-          >
-            API · {base}
-          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setDebugTaskId('')}
+              title="Open reasoning debugger"
+              className="rounded-md border border-[#3f3f46] bg-[#1c1c1f] p-1.5 text-[#a1a1aa] transition-colors hover:border-[#7c3aed]/40 hover:bg-[#7c3aed]/10 hover:text-[#a78bfa]"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="8" />
+                <path d="m21 21-4.3-4.3" />
+              </svg>
+            </button>
+            <span
+              className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
+                health === 'ok' && agentReady
+                  ? 'border-[#059669]/40 bg-[#059669]/10 text-[#86efac]'
+                  : health === 'offline' || agentReady === false
+                    ? 'border-[#dc2626]/40 bg-[#dc2626]/10 text-[#fca5a5]'
+                    : health === 'degraded'
+                      ? 'border-[#d97706]/40 bg-[#d97706]/10 text-[#fcd34d]'
+                      : 'border-[#3f3f46] bg-[#1c1c1f] text-[#71717a]'
+              }`}
+              title={`${base} — status: ${health}, agent: ${agentReady ? 'ready' : 'not ready'}`}
+            >
+              <span className={`inline-block h-2 w-2 rounded-full ${
+                health === 'ok' && agentReady
+                  ? 'bg-[#34d399] shadow-[0_0_6px_#34d399]'
+                  : health === 'offline' || agentReady === false
+                    ? 'bg-[#f87171] shadow-[0_0_6px_#f87171]'
+                    : health === 'degraded'
+                      ? 'bg-[#fbbf24] shadow-[0_0_6px_#fbbf24]'
+                      : 'bg-[#71717a]'
+              }`} />
+              {health === 'ok' && agentReady
+                ? 'Active'
+                : health === 'offline'
+                  ? 'Offline'
+                  : agentReady === false
+                    ? 'Agent Not Ready'
+                    : health === 'degraded'
+                      ? 'Degraded'
+                      : 'Checking...'}
+            </span>
+          </div>
         </div>
       </header>
 
-      <MessageList messages={messages} />
+      <MessageList messages={messages} onDebug={(id) => setDebugTaskId(id)} />
 
       <Composer onSend={send} disabled={pending} />
+
+      {debugTaskId !== null && (
+        <ReasoningSidebar
+          taskId={debugTaskId || null}
+          apiBase={base}
+          onClose={() => setDebugTaskId(null)}
+        />
+      )}
     </div>
   )
 }

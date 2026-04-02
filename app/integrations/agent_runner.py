@@ -29,13 +29,25 @@ class AgentRunResult:
     observability: dict[str, Any] = field(default_factory=dict)
 
 
-def record_assistant_and_schedule_conversation_summary(final_answer: str) -> None:
+def record_assistant_and_schedule_conversation_summary(
+    final_answer: str,
+    plan: list[dict] | None = None,
+) -> None:
     """Append the assistant reply, then refresh the dialogue summary in the background.
 
     Does not block the HTTP response: summarization runs after the caller returns from
     ``run_agent_task`` (same event loop tick schedules the task; DB work and response follow).
     """
     conversation_context.add_assistant(final_answer)
+
+    if plan:
+        tools = list(dict.fromkeys(
+            t.get("agent", "") for t in plan if t.get("agent")
+        ))
+        conversation_context.set_last_tools(tools)
+    else:
+        conversation_context.set_last_tools([])
+
     asyncio.create_task(conversation_context.summarize_async(build_llm("responder")))
 
 
@@ -64,6 +76,8 @@ def _build_observability_json(
         "user_facing_error": (result_state.get("user_facing_error") or ""),
         "failure_flag": bool(result_state.get("failure_flag", False)),
         "response": result_state.get("response", ""),
+        "planner_duration_ms": result_state.get("planner_duration_ms"),
+        "responder_duration_ms": result_state.get("responder_duration_ms"),
         "llm_calls": llm_calls,
         "totals": {
             "input_tokens": u.total_input_tokens if u is not None else None,
@@ -110,7 +124,7 @@ async def run_agent_task(task: str) -> AgentRunResult:
     inp = usage.total_input_tokens if usage is not None else None
     out = usage.total_output_tokens if usage is not None else None
 
-    record_assistant_and_schedule_conversation_summary(answer)
+    record_assistant_and_schedule_conversation_summary(answer, plan=result.get("plan"))
 
     return AgentRunResult(
         final_answer=answer,

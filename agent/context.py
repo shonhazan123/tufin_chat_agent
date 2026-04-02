@@ -28,6 +28,11 @@ class ConversationContext:
         self._ai: deque[AIMessage] = deque(maxlen=5)
         self.summary: str = ""
         self.user_key_facts: str = ""
+        self.last_tools_used: list[str] = []
+
+    def set_last_tools(self, tools: list[str]) -> None:
+        """Record which tools were invoked in the most recent turn."""
+        self.last_tools_used = list(tools)
 
     def add_user(self, text: str) -> None:
         """Record a user message (tagged for downstream summarizers)."""

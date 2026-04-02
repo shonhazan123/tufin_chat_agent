@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 # Planner: last messages + rolling summary only (no key facts).
-PLANNER_MEMORY_MAX_TOKENS = 200
+# Budget increased from 200 to accommodate follow-up context signals
+# (previous tool names, resolved references).
+PLANNER_MEMORY_MAX_TOKENS = 300
 
 # Responder: user key facts + rolling summary only (no full recent transcript here).
 RESPONDER_MEMORY_MAX_TOKENS = 120
