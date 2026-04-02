@@ -19,6 +19,7 @@ class TaskSubmitResponse(BaseModel):
     task_id: UUID
     final_answer: str
     latency_ms: int | None = None
+    total_cached_tokens: int | None = None
     total_input_tokens: int | None = None
     total_output_tokens: int | None = None
 
@@ -61,6 +62,7 @@ class TaskDebugResponse(BaseModel):
     created_at: datetime
     completed_at: datetime | None = None
     latency_ms: int | None = None
+    total_cached_tokens: int | None = None
     total_input_tokens: int | None = None
     total_output_tokens: int | None = None
     reasoning_tree: list[ReasoningStep]

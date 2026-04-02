@@ -15,8 +15,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent.llm import get_llm_semaphore
-from agent.token_counter import count_chat_tokens
-from agent.usage import record_llm_message
+from agent.tokens import record_llm_call
 from agent.tools.base import (
     BaseToolAgent,
     ToolInvocation,
@@ -260,17 +259,12 @@ class CalculatorAgent(BaseToolAgent):
             SystemMessage(content=self.SYSTEM),
             HumanMessage(content=human_content),
         ]
-        estimated_input = count_chat_tokens(messages, model=self.llm.model_name)
-        logger.info("calculator LLM call: estimated_input_tokens=%d", estimated_input)
         async with get_llm_semaphore():
             params_msg = await asyncio.wait_for(
                 self.llm.ainvoke(messages),
                 timeout=self.timeout,
             )
-        record_llm_message(
-            f"tool:{self.spec.name}", params_msg,
-            model=self.llm.model_name, estimated_input_tokens=estimated_input,
-        )
+        record_llm_call(f"tool:{self.spec.name}", params_msg, messages=messages, model=self.llm.model_name)
         raw = strip_json_fence(params_msg.content)
         parsed = json.loads(raw)
         if not isinstance(parsed, dict):

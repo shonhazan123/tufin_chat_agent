@@ -39,6 +39,7 @@ class Task(Base):
     final_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
     trace_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_cached_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     observability_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

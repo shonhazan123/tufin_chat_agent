@@ -87,6 +87,7 @@ export function ChatShell() {
           task_id?: string
           final_answer?: string
           latency_ms?: number | null
+          total_cached_tokens?: number | null
           total_input_tokens?: number | null
           total_output_tokens?: number | null
           error?: { message?: string }
@@ -110,6 +111,7 @@ export function ChatShell() {
                   status: 'done' as const,
                   taskId,
                   latencyMs: data.latency_ms,
+                  totalCachedTokens: data.total_cached_tokens,
                   totalInputTokens: data.total_input_tokens,
                   totalOutputTokens: data.total_output_tokens,
                 }

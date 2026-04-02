@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agent.token_counter import count_text_tokens
+from agent.tokens import count_tokens
 
 PLANNER_MEMORY_MAX_TOKENS = 300
 
@@ -13,7 +13,7 @@ def estimate_tokens(text: str) -> int:
     """Token count via tiktoken (accurate for OpenAI models; reasonable fallback for others)."""
     if not text or not text.strip():
         return 0
-    return max(1, count_text_tokens(text.strip()))
+    return max(1, count_tokens(text.strip()))
 
 
 def _truncate_to_token_budget(text: str, max_tokens: int) -> str:

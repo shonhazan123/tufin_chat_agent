@@ -41,6 +41,7 @@ class TaskRepository:
         trace: list[dict],
         *,
         latency_ms: int | None = None,
+        total_cached_tokens: int | None = None,
         total_input_tokens: int | None = None,
         total_output_tokens: int | None = None,
         observability_json: dict[str, Any] | None = None,
@@ -53,6 +54,7 @@ class TaskRepository:
         task.final_answer = final_answer
         task.trace_json = trace
         task.latency_ms = latency_ms
+        task.total_cached_tokens = total_cached_tokens
         task.total_input_tokens = total_input_tokens
         task.total_output_tokens = total_output_tokens
         task.observability_json = observability_json

@@ -12,8 +12,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent.context import conversation_context
 from agent.llm import build_llm
-from agent.token_counter import count_chat_tokens
-from agent.usage import record_llm_message
+from agent.tokens import record_llm_call
 from agent.memory_format import (
     PLANNER_MEMORY_MAX_TOKENS,
     build_planner_context_block,
@@ -50,8 +49,6 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
         SystemMessage(content=system_prompt),
         HumanMessage(content="\n\n".join(parts)),
     ]
-    estimated_input = count_chat_tokens(messages, model=llm.model_name)
-    logger.info("Planner LLM call: estimated_input_tokens=%d", estimated_input)
 
     t0 = time.perf_counter()
     result = await asyncio.wait_for(
@@ -59,7 +56,7 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
         timeout=cfg["executor"]["tool_timeout_seconds"],
     )
     planner_ms = int((time.perf_counter() - t0) * 1000)
-    record_llm_message("planner", result, model=llm.model_name, estimated_input_tokens=estimated_input)
+    record_llm_call("planner", result, messages=messages, model=llm.model_name)
 
     text = result.content.strip()
     if text.startswith("```"):
@@ -279,8 +276,6 @@ async def response_node(state: dict[str, Any]) -> dict[str, Any]:
         SystemMessage(content=RESPONDER_SYSTEM),
         HumanMessage(content=content),
     ]
-    estimated_input = count_chat_tokens(messages, model=llm.model_name)
-    logger.info("Responder LLM call: estimated_input_tokens=%d", estimated_input)
 
     t0 = time.perf_counter()
     result = await asyncio.wait_for(
@@ -288,6 +283,6 @@ async def response_node(state: dict[str, Any]) -> dict[str, Any]:
         timeout=cfg["executor"]["tool_timeout_seconds"],
     )
     responder_ms = int((time.perf_counter() - t0) * 1000)
-    record_llm_message("responder", result, model=llm.model_name, estimated_input_tokens=estimated_input)
+    record_llm_call("responder", result, messages=messages, model=llm.model_name)
 
     return {"response": result.content, "responder_duration_ms": responder_ms}

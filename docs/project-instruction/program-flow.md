@@ -85,16 +85,20 @@ Graph returns to API layer
   └── Return TaskSubmitResponse to client (task_id, final_answer, latency_ms, token totals only). Full observability: GET /api/v1/tasks/{task_id} → TaskDetailResponse
 ```
 
-Every LLM invocation site (planner, responder, and tool param-extraction calls) first runs `count_chat_tokens(messages, model)` via `agent.token_counter` (tiktoken-based) to compute a pre-call input-token estimate. This estimate is:
-- Logged at INFO level before the call (e.g. `Planner LLM call: estimated_input_tokens=482`)
-- Passed as `estimated_input_tokens` to `record_llm_message`
+Every LLM invocation site (planner, responder, and tool param-extraction calls) calls `record_llm_call(role, response, messages=messages, model=model)` from `agent.tokens` after the LLM call returns. This single function:
 
-`agent.usage.record_llm_message` then:
-1. Extracts the provider's reported `input_tokens` from the response metadata (when available)
-2. If the provider returned `None` (common with Ollama), uses the tiktoken estimate as fallback
-3. Logs a warning when provider and estimate diverge by >30%
+1. Splits the message list into **cached_tokens** (SystemMessage — static prompt) and **input_tokens** (HumanMessage — dynamic content) using tiktoken
+2. Extracts **output_tokens** from the provider's response metadata
+3. When the provider returns no input-token metadata (common with Ollama), uses the tiktoken estimates as fallback
+4. Logs a warning when provider and tiktoken totals diverge by >30%
+5. Logs `planner LLM call: cached=380, input=140, output=85` at INFO level
 
-This ensures token observability data is never blank, even with providers that omit usage metadata.
+The 3-way split (cached / input / output) flows through the entire stack:
+- `InvocationUsage` accumulates `total_cached_tokens`, `total_input_tokens`, `total_output_tokens`
+- `observability_json.totals` and each entry in `observability_json.llm_calls` carry all three
+- DB: `tasks.total_cached_tokens`, `tasks.total_input_tokens`, `tasks.total_output_tokens`
+- API: `TaskSubmitResponse`, `TaskDebugResponse`, and `ReasoningStep.tokens` all expose `{cached, input, output}`
+- Chat UI: TracePanel, TokenBar, and TokenBadge display all three values
 
 ## Observability (metrics vs persisted trace)
 
@@ -126,7 +130,7 @@ This ensures token observability data is never blank, even with providers that o
 
 ## LLM Semaphore Behavior
 
-For Ollama (single GPU): Semaphore(1) serializes LLM calls.
+For Ollama (single GPU): Semaphore(1) serializes LLM calls. The Ollama provider stack uses **`mistral`** with per-agent **`num_ctx`** (≤4096 for planner/responder; smaller for tools), passed in API options from `agent/llm.py`. The Compose **`ollama`** service sets **`OLLAMA_NUM_PARALLEL=1`** and **`OLLAMA_GPU_OVERHEAD`** for VRAM headroom; see [docker.md](docker.md).
 For OpenAI: Semaphore(5) allows parallel calls.
 
 The semaphore is held only during LLM param extraction, released before API calls. This allows API calls from multiple tools to overlap even when LLM calls are serialized.

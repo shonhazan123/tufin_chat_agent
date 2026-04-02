@@ -11,7 +11,7 @@ from typing import Any
 from agent.context import conversation_context
 from agent.graph import get_graph
 from agent.llm import build_llm
-from agent.usage import get_invocation_usage, reset_invocation_usage
+from agent.tokens import get_usage, reset_usage
 from agent.yaml_config import load_config
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,7 @@ class AgentRunResult:
     trace: list[dict]
     failure_flag: bool = False
     latency_ms: int = 0
+    total_cached_tokens: int | None = None
     total_input_tokens: int | None = None
     total_output_tokens: int | None = None
     observability: dict[str, Any] = field(default_factory=dict)
@@ -80,6 +81,7 @@ def _build_observability_json(
         "responder_duration_ms": result_state.get("responder_duration_ms"),
         "llm_calls": llm_calls,
         "totals": {
+            "cached_tokens": u.total_cached_tokens if u is not None else None,
             "input_tokens": u.total_input_tokens if u is not None else None,
             "output_tokens": u.total_output_tokens if u is not None else None,
         },
@@ -90,7 +92,7 @@ async def run_agent_task(task: str) -> AgentRunResult:
     cfg = load_config()
     graph = get_graph()
 
-    reset_invocation_usage()
+    reset_usage()
 
     conversation_context.add_user(task)
 
@@ -119,8 +121,9 @@ async def run_agent_task(task: str) -> AgentRunResult:
     trace = result.get("trace", [])
     failure_flag = bool(result.get("failure_flag", False))
 
-    usage = get_invocation_usage()
+    usage = get_usage()
     obs = _build_observability_json(initial_state, result, usage)
+    cached = usage.total_cached_tokens if usage is not None else None
     inp = usage.total_input_tokens if usage is not None else None
     out = usage.total_output_tokens if usage is not None else None
 
@@ -131,6 +134,7 @@ async def run_agent_task(task: str) -> AgentRunResult:
         trace=trace,
         failure_flag=failure_flag,
         latency_ms=latency_ms,
+        total_cached_tokens=cached,
         total_input_tokens=inp,
         total_output_tokens=out,
         observability=obs,

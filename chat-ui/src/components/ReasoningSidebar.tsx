@@ -161,7 +161,7 @@ export function ReasoningSidebar({ taskId: initialTaskId, apiBase, onClose }: Pr
                   </span>
                   <span>
                     <span className="text-[#71717a]">Tokens</span>{' '}
-                    {fmt(data.total_input_tokens)} in / {fmt(data.total_output_tokens)} out
+                    {fmt(data.total_cached_tokens)} cached / {fmt(data.total_input_tokens)} in / {fmt(data.total_output_tokens)} out
                   </span>
                   <span>
                     <span className="text-[#71717a]">Created</span>{' '}
@@ -187,12 +187,13 @@ export function ReasoningSidebar({ taskId: initialTaskId, apiBase, onClose }: Pr
               </div>
 
               {/* Token usage footer */}
-              {(data.total_input_tokens != null || data.total_output_tokens != null) && (
+              {(data.total_cached_tokens != null || data.total_input_tokens != null || data.total_output_tokens != null) && (
                 <div className="mt-4 rounded-lg border border-[#3f3f46] bg-[#1c1c1f] p-3">
                   <p className="mb-1.5 text-[0.625rem] font-semibold uppercase tracking-wider text-[#71717a]">
                     Total Token Usage
                   </p>
                   <TokenBar
+                    cached={data.total_cached_tokens ?? 0}
                     input={data.total_input_tokens ?? 0}
                     output={data.total_output_tokens ?? 0}
                   />
@@ -206,18 +207,23 @@ export function ReasoningSidebar({ taskId: initialTaskId, apiBase, onClose }: Pr
   )
 }
 
-function TokenBar({ input, output }: { input: number; output: number }) {
-  const total = input + output
+function TokenBar({ cached, input, output }: { cached: number; input: number; output: number }) {
+  const total = cached + input + output
   if (total === 0) return <p className="text-xs text-[#71717a]">No token data</p>
+  const cachedPct = Math.round((cached / total) * 100)
   const inPct = Math.round((input / total) * 100)
-  const outPct = 100 - inPct
+  const outPct = 100 - cachedPct - inPct
   return (
     <div>
       <div className="flex h-2.5 overflow-hidden rounded-full bg-[#27272a]">
+        <div className="bg-[#fbbf24] transition-all" style={{ width: `${cachedPct}%` }} />
         <div className="bg-[#86efac] transition-all" style={{ width: `${inPct}%` }} />
         <div className="bg-[#93c5fd] transition-all" style={{ width: `${outPct}%` }} />
       </div>
       <div className="mt-1 flex justify-between text-[0.6875rem] text-[#a1a1aa]">
+        <span>
+          <span className="inline-block h-2 w-2 rounded-full bg-[#fbbf24]" /> Cached: {cached}
+        </span>
         <span>
           <span className="inline-block h-2 w-2 rounded-full bg-[#86efac]" /> Input: {input}
         </span>

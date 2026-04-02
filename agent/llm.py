@@ -36,8 +36,9 @@ def build_llm(agent_name: str) -> ChatOpenAI:
 
     if provider == "ollama":
         num_ctx = agent_cfg.get("num_ctx")
-        if num_ctx:
-            kwargs["model_kwargs"] = {"num_ctx": num_ctx}
+        if num_ctx is not None:
+            # Caps KV cache / VRAM (Ollama native options; not valid as top-level chat payload).
+            kwargs["extra_body"] = {"options": {"num_ctx": int(num_ctx)}}
 
     return ChatOpenAI(**kwargs)
 

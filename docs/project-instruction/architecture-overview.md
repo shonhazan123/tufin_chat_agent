@@ -59,9 +59,8 @@ Both Ollama and OpenAI use `ChatOpenAI` from `langchain-openai`. At **process st
 | `agent/state.py` | AgentState TypedDict with merge/append/add reducers |
 | `agent/prompts.py` | Planner, responder, summarizer system prompts |
 | `agent/context.py` | Conversation singleton: tagged window, `summary`, `user_key_facts`; background JSON summarizer after each reply |
-| `agent/memory_format.py` | `build_planner_context_block` (recent + summary); `build_responder_memory_block` (key facts + summary); separate token caps; `estimate_tokens` uses tiktoken via `token_counter` |
-| `agent/token_counter.py` | Accurate pre-call token counting via `tiktoken`; `count_chat_tokens` (messages + overhead), `count_text_tokens` (plain text); fallback for models without tiktoken encoding |
-| `agent/usage.py` | Per-invocation LLM token totals (`record_llm_message`); accepts `estimated_input_tokens` (pre-call tiktoken count) and uses it as fallback when provider metadata is absent |
+| `agent/memory_format.py` | `build_planner_context_block` (recent + summary); `build_responder_memory_block` (key facts + summary); separate token caps; `estimate_tokens` uses tiktoken via `tokens.count_tokens` |
+| `agent/tokens.py` | Token counting + per-invocation usage tracking (merged). `count_tokens(text)` for budgeting; `record_llm_call(role, response, messages, model)` — single call that splits SystemMessage tokens (`cached_tokens`) from HumanMessage tokens (`input_tokens`), extracts `output_tokens` from provider, with tiktoken fallback. Every LLM call and aggregate total always shows the 3-way split: cached / input / output. |
 | `agent/graph_nodes.py` | planner_node, executor_node, response_node, routing |
 | `agent/graph.py` | LangGraph StateGraph compilation with conditional edges |
 | `agent/startup.py` | Ordered initialization sequence + validation |

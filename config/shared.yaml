@@ -40,4 +40,4 @@ cache:
 executor:
   max_waves: 10
   max_parallel_tools: 8
-  tool_timeout_seconds: 15
+  tool_timeout_seconds: 100

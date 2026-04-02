@@ -495,24 +495,24 @@ openai:
 
 agents:
   planner:
-    model: qwen2.5:7b-instruct-q4_K_M
+    model: mistral
     max_tokens: 512
     temperature: 0
     num_ctx: 4096        # required — never rely on Ollama defaults
   responder:
-    model: qwen2.5:7b-instruct-q4_K_M
+    model: mistral
     max_tokens: 1024
     temperature: 0.3
     max_retries: 3
-    num_ctx: 8192
+    num_ctx: 4096
   weather:
-    model: qwen2.5:7b-instruct-q4_K_M
+    model: mistral
     max_tokens: 256
     temperature: 0
     max_retries: 3
     num_ctx: 2048
   web_search:
-    model: qwen2.5:7b-instruct-q4_K_M
+    model: mistral
     max_tokens: 512
     temperature: 0
     max_retries: 3

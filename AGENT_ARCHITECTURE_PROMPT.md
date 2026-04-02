@@ -307,27 +307,27 @@ openai:
 # Ollama: single local model for all agents (see config/ollama.yaml)
 agents:
   planner:
-    model: qwen2.5:7b-instruct-q4_K_M
+    model: mistral
     max_tokens: 512
     temperature: 0
   responder:
-    model: qwen2.5:7b-instruct-q4_K_M
+    model: mistral
     max_tokens: 1024
     temperature: 0.3
   weather:
-    model: qwen2.5:7b-instruct-q4_K_M
+    model: mistral
     max_tokens: 256
     temperature: 0
   calculator:
-    model: qwen2.5:7b-instruct-q4_K_M
+    model: mistral
     max_tokens: 256
     temperature: 0
   web_search:
-    model: qwen2.5:7b-instruct-q4_K_M
+    model: mistral
     max_tokens: 512
     temperature: 0
   database_query:
-    model: qwen2.5:7b-instruct-q4_K_M
+    model: mistral
     max_tokens: 512
     temperature: 0
 

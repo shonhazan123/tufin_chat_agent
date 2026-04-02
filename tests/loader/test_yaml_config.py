@@ -29,8 +29,9 @@ def test_load_config_ollama(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "ollama")
     cfg = load_config()
     assert cfg["provider"] == "ollama"
-    assert cfg["agents"]["planner"]["model"] == "qwen2.5:7b-instruct-q4_K_M"
+    assert cfg["agents"]["planner"]["model"] == "mistral"
     assert cfg["agents"]["planner"]["num_ctx"] == 4096
+    assert cfg["agents"]["responder"]["num_ctx"] == 4096
     assert "ollama" not in cfg["tools"]
 
 
@@ -43,5 +44,7 @@ def test_load_config_invalid_provider(monkeypatch):
 def test_llm_provider_defaults_to_openai(monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "x")
+    # load_config() calls load_dotenv(); repo .env may set LLM_PROVIDER — skip so default stays code-driven.
+    monkeypatch.setattr("agent.yaml_config.load_dotenv", lambda *_a, **_k: None)
     cfg = load_config()
     assert cfg["provider"] == "openai"

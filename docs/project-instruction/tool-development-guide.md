@@ -71,7 +71,7 @@ agents:
     model: gpt-4o-mini   # or a local model id under Ollama
     max_tokens: 256
     temperature: 0
-    num_ctx: 2048        # Ollama only; omit for OpenAI
+    num_ctx: 2048        # Ollama: passed as extra_body options (agent/llm.py) to cap KV cache / VRAM
 
 # config/shared.yaml
 tools:

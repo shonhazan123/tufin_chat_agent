@@ -13,8 +13,7 @@ import aiosqlite
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent.llm import get_llm_semaphore
-from agent.token_counter import count_chat_tokens
-from agent.usage import record_llm_message
+from agent.tokens import record_llm_call
 from agent.yaml_config import load_config
 from agent.tools.base import (
     BaseToolAgent,
@@ -205,17 +204,12 @@ class DatabaseQueryAgent(BaseToolAgent):
             SystemMessage(content=self.SYSTEM),
             HumanMessage(content=human_content),
         ]
-        estimated_input = count_chat_tokens(messages, model=self.llm.model_name)
-        logger.info("database_query LLM call: estimated_input_tokens=%d", estimated_input)
         async with get_llm_semaphore():
             result = await asyncio.wait_for(
                 self.llm.ainvoke(messages),
                 timeout=self.timeout,
             )
-        record_llm_message(
-            f"tool:{self.spec.name}", result,
-            model=self.llm.model_name, estimated_input_tokens=estimated_input,
-        )
+        record_llm_call(f"tool:{self.spec.name}", result, messages=messages, model=self.llm.model_name)
         raw = strip_json_fence(result.content)
         try:
             parsed = json.loads(raw)

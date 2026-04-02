@@ -22,6 +22,17 @@ from app.schemas.task import ReasoningStep, TaskDebugResponse, TaskDetailRespons
 logger = logging.getLogger(__name__)
 
 
+def _safe_int(val: Any) -> int | None:
+    if val is None:
+        return None
+    if isinstance(val, int):
+        return val
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
 def _cache_model_hint() -> str:
     try:
         cfg = load_config()
@@ -65,24 +76,10 @@ class TaskService:
             final_answer = str(cached.get("final_answer", ""))
             trace = list(cached.get("trace", []))
             obs = _observability_from_cache(cached, trace)
-            latency_ms = cached.get("latency_ms")
-            if latency_ms is not None and not isinstance(latency_ms, int):
-                try:
-                    latency_ms = int(latency_ms)
-                except (TypeError, ValueError):
-                    latency_ms = None
-            tin = cached.get("total_input_tokens")
-            tout = cached.get("total_output_tokens")
-            if tin is not None and not isinstance(tin, int):
-                try:
-                    tin = int(tin)
-                except (TypeError, ValueError):
-                    tin = None
-            if tout is not None and not isinstance(tout, int):
-                try:
-                    tout = int(tout)
-                except (TypeError, ValueError):
-                    tout = None
+            latency_ms = _safe_int(cached.get("latency_ms"))
+            tcached = _safe_int(cached.get("total_cached_tokens"))
+            tin = _safe_int(cached.get("total_input_tokens"))
+            tout = _safe_int(cached.get("total_output_tokens"))
             conversation_context.add_user(normalized)
             record_assistant_and_schedule_conversation_summary(final_answer)
             await self._repo.complete(
@@ -90,6 +87,7 @@ class TaskService:
                 final_answer,
                 trace,
                 latency_ms=latency_ms,
+                total_cached_tokens=tcached,
                 total_input_tokens=tin,
                 total_output_tokens=tout,
                 observability_json=obs,
@@ -100,6 +98,7 @@ class TaskService:
                 task_id=task.id,
                 final_answer=final_answer,
                 latency_ms=latency_ms,
+                total_cached_tokens=tcached,
                 total_input_tokens=tin,
                 total_output_tokens=tout,
             )
@@ -121,6 +120,7 @@ class TaskService:
             result.final_answer,
             result.trace,
             latency_ms=result.latency_ms,
+            total_cached_tokens=result.total_cached_tokens,
             total_input_tokens=result.total_input_tokens,
             total_output_tokens=result.total_output_tokens,
             observability_json=result.observability,
@@ -134,6 +134,7 @@ class TaskService:
                 "final_answer": result.final_answer,
                 "trace": result.trace,
                 "latency_ms": result.latency_ms,
+                "total_cached_tokens": result.total_cached_tokens,
                 "total_input_tokens": result.total_input_tokens,
                 "total_output_tokens": result.total_output_tokens,
                 "observability_json": result.observability,
@@ -145,6 +146,7 @@ class TaskService:
             task_id=task.id,
             final_answer=result.final_answer,
             latency_ms=result.latency_ms,
+            total_cached_tokens=result.total_cached_tokens,
             total_input_tokens=result.total_input_tokens,
             total_output_tokens=result.total_output_tokens,
         )
@@ -157,6 +159,7 @@ class TaskService:
             task_id=task.id,
             final_answer=task.final_answer or "",
             latency_ms=task.latency_ms,
+            total_cached_tokens=task.total_cached_tokens,
             total_input_tokens=task.total_input_tokens,
             total_output_tokens=task.total_output_tokens,
             observability=task.observability_json or {},
@@ -173,6 +176,7 @@ class TaskService:
             created_at=task.created_at,
             completed_at=task.completed_at,
             latency_ms=task.latency_ms,
+            total_cached_tokens=task.total_cached_tokens,
             total_input_tokens=task.total_input_tokens,
             total_output_tokens=task.total_output_tokens,
             reasoning_tree=tree,
@@ -197,7 +201,11 @@ def _pop_call_for_role(
             u = call.get("usage") or {}
             model = call.get("model")
             llm_calls.pop(i)
-            return {"input": u.get("input_tokens"), "output": u.get("output_tokens")}, model
+            return {
+                "cached": u.get("cached_tokens"),
+                "input": u.get("input_tokens"),
+                "output": u.get("output_tokens"),
+            }, model
     return None, None
 
 

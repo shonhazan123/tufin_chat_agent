@@ -1,6 +1,7 @@
 type Props = {
   taskId?: string
   latencyMs?: number | null
+  totalCachedTokens?: number | null
   totalInputTokens?: number | null
   totalOutputTokens?: number | null
   onDebug?: (taskId: string) => void
@@ -14,6 +15,7 @@ function fmtNum(n: number | null | undefined): string {
 export function TracePanel({
   taskId,
   latencyMs,
+  totalCachedTokens,
   totalInputTokens,
   totalOutputTokens,
   onDebug,
@@ -50,8 +52,8 @@ export function TracePanel({
           {latencyMs != null ? `${latencyMs} ms` : '—'}
         </p>
         <p>
-          <span className="text-[#71717a]">Tokens (in / out)</span>{' '}
-          {fmtNum(totalInputTokens)} / {fmtNum(totalOutputTokens)}
+          <span className="text-[#71717a]">Tokens (cached / in / out)</span>{' '}
+          {fmtNum(totalCachedTokens)} / {fmtNum(totalInputTokens)} / {fmtNum(totalOutputTokens)}
         </p>
       </div>
     </details>

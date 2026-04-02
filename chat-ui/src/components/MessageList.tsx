@@ -44,6 +44,7 @@ export function MessageList({ messages, onDebug }: Props) {
                     <TracePanel
                       taskId={m.taskId}
                       latencyMs={m.latencyMs}
+                      totalCachedTokens={m.totalCachedTokens}
                       totalInputTokens={m.totalInputTokens}
                       totalOutputTokens={m.totalOutputTokens}
                       onDebug={onDebug}

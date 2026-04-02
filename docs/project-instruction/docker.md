@@ -112,13 +112,20 @@ Use this when the LLM should run **inside Docker** (Ollama service + automatic *
    docker compose --profile ollama exec ollama ollama list
    ```
 
-**Model name**: Default pull is **`qwen2.5:7b-instruct-q4_K_M`**. Override with **`OLLAMA_PULL_MODEL`** in `.env` (must match `config/ollama.yaml`).
+**Model name**: Default pull is **`mistral`** (see `config/ollama.yaml`). Override with **`OLLAMA_PULL_MODEL`** in `.env` (must match YAML).
+
+**Ollama container env (VRAM / stability)** — set on the **`ollama`** service in `docker-compose.yml`:
+
+- `OLLAMA_NUM_PARALLEL=1` — limits concurrent inference (fewer VRAM spikes).
+- `OLLAMA_GPU_OVERHEAD=1073741824` — reserves ~1 GB VRAM headroom.
 
 **Persistence**: Models live in the **`ollama_data`** volume. `docker compose down -v` removes volumes, including downloaded models.
 
 **GPU in Docker**
 
-- **Linux / Windows (WSL2)**: Install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html), then uncomment the `deploy.resources.reservations.devices` block under **`ollama`** in `docker-compose.yml`.
+- **Linux / Windows (WSL2)**: Install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html). The **`ollama`** service includes a **`deploy`** GPU reservation; **comment out the entire `deploy:` block** if you run CPU-only (Compose may error without a GPU/driver).
+- After the stack is up and you send a chat, on the host run **`nvidia-smi`**: you should see Ollama using VRAM and non-zero GPU utilization when a request is in flight.
+- **Avoid conflicts**: do not run **host** Ollama on `11434` at the same time as this container (one listener per port).
 - **macOS (Docker Desktop)**: GPU passthrough into Ollama containers is not supported; prefer **host Ollama** (below) or CPU inside Docker (slow).
 
 ---
@@ -191,7 +198,7 @@ If testers open the UI from another machine, set the build arg to a reachable AP
 
 The agent uses **OpenAI-compatible** endpoints via LangChain’s `ChatOpenAI` (`agent/llm.py`). Ollama exposes that at **`{base}/v1`**. Configuration comes from `LLM_PROVIDER=ollama`, `OLLAMA_BASE_URL`, and merged YAML in `config/ollama.yaml`. Concurrency is limited to **one** in-flight LLM call when `provider == ollama` (single-GPU friendly).
 
-**Default model** (all agents in `config/ollama.yaml`): `qwen2.5:7b-instruct-q4_K_M`.
+**Default model** (all agents in `config/ollama.yaml`): **`mistral`**, with **`num_ctx` ≤ 4096** for planner/responder and smaller for tools (limits KV-cache VRAM; see `agent/llm.py`).
 
 With **`--profile ollama`**, **`ollama-pull`** downloads that model into the volume in the background; remain on **OpenAI** until the pull completes if you want the API usable immediately.
 
@@ -202,7 +209,7 @@ With **`--profile ollama`**, **`ollama-pull`** downloads that model into the vol
 Docker **does not** pull models on the host. Install from [https://ollama.com/download](https://ollama.com/download), then:
 
 ```bash
-ollama pull qwen2.5:7b-instruct-q4_K_M
+ollama pull mistral
 ```
 
 **`.env` — API on host**: `LLM_PROVIDER=ollama`, `OLLAMA_BASE_URL=http://localhost:11434/v1`

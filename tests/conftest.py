@@ -12,7 +12,7 @@ _TEST_CONFIG = {
     "openai": {"base_url": "https://api.openai.com/v1", "api_key": "test"},
     "agents": {
         "planner": {"model": "test", "max_tokens": 512, "temperature": 0, "num_ctx": 4096},
-        "responder": {"model": "test", "max_tokens": 1024, "temperature": 0.3, "num_ctx": 8192, "max_retries": 3},
+        "responder": {"model": "test", "max_tokens": 1024, "temperature": 0.3, "num_ctx": 4096, "max_retries": 3},
         "weather": {"model": "test", "max_tokens": 256, "temperature": 0, "num_ctx": 2048, "max_retries": 3},
         "web_search": {"model": "test", "max_tokens": 512, "temperature": 0, "num_ctx": 4096, "max_retries": 3},
         "calculator": {"model": "test", "max_tokens": 256, "temperature": 0, "num_ctx": 2048, "max_retries": 3},

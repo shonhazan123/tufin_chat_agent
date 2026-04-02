@@ -68,9 +68,11 @@ function SectionBlock({ text }: { text: string }) {
   )
 }
 
-function TokenBadge({ tokens }: { tokens: { input: number | null; output: number | null } }) {
+function TokenBadge({ tokens }: { tokens: { cached: number | null; input: number | null; output: number | null } }) {
   return (
     <span className="ml-2 inline-flex items-center gap-1.5 rounded-full bg-[#27272a] px-2 py-0.5 text-[0.6875rem] text-[#a1a1aa]">
+      <span className="text-[#fbbf24]">{tokens.cached ?? '—'}</span>
+      <span className="text-[#71717a]">/</span>
       <span className="text-[#86efac]">↓{tokens.input ?? '—'}</span>
       <span className="text-[#71717a]">/</span>
       <span className="text-[#93c5fd]">↑{tokens.output ?? '—'}</span>
@@ -143,6 +145,10 @@ export function ReasoningStepCard({ step, depth = 0 }: Props) {
             {step.tokens && (
               <div className="flex gap-4 pt-1 text-[0.6875rem]">
                 <span>
+                  <span className="text-[#71717a]">Cached:</span>{' '}
+                  <span className="text-[#fbbf24]">{step.tokens.cached ?? '—'}</span>
+                </span>
+                <span>
                   <span className="text-[#71717a]">In:</span>{' '}
                   <span className="text-[#86efac]">{step.tokens.input ?? '—'}</span>
                 </span>
@@ -153,7 +159,7 @@ export function ReasoningStepCard({ step, depth = 0 }: Props) {
                 {step.duration_ms != null && (
                   <span>
                     <span className="text-[#71717a]">Time:</span>{' '}
-                    <span className="text-[#fbbf24]">{step.duration_ms} ms</span>
+                    <span className="text-[#d4d4d8]">{step.duration_ms} ms</span>
                   </span>
                 )}
               </div>

@@ -7,6 +7,7 @@ export type AssistantMessage = {
   taskId?: string
   /** Graph invocation latency (ms) */
   latencyMs?: number | null
+  totalCachedTokens?: number | null
   totalInputTokens?: number | null
   totalOutputTokens?: number | null
 }
@@ -30,7 +31,7 @@ export type ReasoningStep = {
   status: 'ok' | 'error'
   model?: string | null
   duration_ms?: number | null
-  tokens?: { input: number | null; output: number | null } | null
+  tokens?: { cached: number | null; input: number | null; output: number | null } | null
   input_summary?: string | null
   output_summary?: string | null
   wave?: number | null
@@ -46,6 +47,7 @@ export type TaskDebugData = {
   created_at: string
   completed_at?: string | null
   latency_ms?: number | null
+  total_cached_tokens?: number | null
   total_input_tokens?: number | null
   total_output_tokens?: number | null
   reasoning_tree: ReasoningStep[]
