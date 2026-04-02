@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
 
 from sqlalchemy import engine_from_config, pool
+from sqlalchemy.engine.url import make_url
 
 from alembic import context
 
@@ -24,8 +26,19 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def _sync_url_from_env_or_ini() -> str:
+    """Match API ``DATABASE_URL`` (async) with a sync URL for Alembic."""
+    dsn = os.environ.get("DATABASE_URL")
+    if dsn and ":memory:" not in dsn:
+        u = make_url(dsn)
+        if u.drivername == "sqlite+aiosqlite":
+            return str(u.set(drivername="sqlite"))
+        return str(u)
+    return config.get_main_option("sqlalchemy.url")
+
+
 def run_migrations_offline() -> None:
-    url = config.get_main_option("sqlalchemy.url")
+    url = _sync_url_from_env_or_ini()
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -37,8 +50,10 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    section = config.get_section(config.config_ini_section, {})
+    section["sqlalchemy.url"] = _sync_url_from_env_or_ini()
     connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
+        section,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )

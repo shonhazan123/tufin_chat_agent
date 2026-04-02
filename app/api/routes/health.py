@@ -36,10 +36,17 @@ async def health(request: Request) -> HealthResponse:
         redis_state = "skipped"
 
     agent_state = "error"
+    provider = None
+    models = None
     try:
         from agent.graph import get_graph
         get_graph()
         agent_state = "ok"
+        from agent.yaml_config import load_config
+        cfg = load_config()
+        provider = cfg.get("provider")
+        agents_cfg = cfg.get("agents") or {}
+        models = {name: acfg.get("model") for name, acfg in agents_cfg.items()}
     except Exception:
         agent_state = "error"
 
@@ -51,4 +58,7 @@ async def health(request: Request) -> HealthResponse:
     elif redis_state == "error" and settings.redis_url and settings.redis_optional:
         overall = "degraded"
 
-    return HealthResponse(status=overall, sqlite=sqlite_state, redis=redis_state, agent=agent_state)
+    return HealthResponse(
+        status=overall, sqlite=sqlite_state, redis=redis_state,
+        agent=agent_state, provider=provider, models=models,
+    )

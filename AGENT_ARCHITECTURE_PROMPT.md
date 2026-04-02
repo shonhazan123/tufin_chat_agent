@@ -304,7 +304,7 @@ openai:
   base_url: https://api.openai.com/v1
   api_key: ${OPENAI_API_KEY}
 
-# Each agent picks its own model independently
+# Ollama: single local model for all agents (see config/ollama.yaml)
 agents:
   planner:
     model: qwen2.5:7b-instruct-q4_K_M
@@ -315,11 +315,11 @@ agents:
     max_tokens: 1024
     temperature: 0.3
   weather:
-    model: llama3.2:3b-instruct-q4_K_M   # small — extraction is simple
+    model: qwen2.5:7b-instruct-q4_K_M
     max_tokens: 256
     temperature: 0
   calculator:
-    model: llama3.2:3b-instruct-q4_K_M
+    model: qwen2.5:7b-instruct-q4_K_M
     max_tokens: 256
     temperature: 0
   web_search:

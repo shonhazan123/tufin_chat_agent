@@ -506,7 +506,7 @@ agents:
     max_retries: 3
     num_ctx: 8192
   weather:
-    model: llama3.2:3b-instruct-q4_K_M
+    model: qwen2.5:7b-instruct-q4_K_M
     max_tokens: 256
     temperature: 0
     max_retries: 3

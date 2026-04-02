@@ -1,16 +1,26 @@
-"""Per-invocation LLM token usage — contextvar accumulator + AIMessage extraction."""
+"""Per-invocation LLM token usage — contextvar accumulator + AIMessage extraction.
+
+Supports both post-hoc extraction from provider metadata AND pre-call tiktoken
+estimates.  When the provider returns None for input tokens (common with Ollama),
+the pre-call estimate is used as a fallback so observability always has data.
+"""
 
 from __future__ import annotations
 
+import logging
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.messages import BaseMessage
 
+logger = logging.getLogger(__name__)
+
 _invocation_usage: ContextVar["InvocationUsage | None"] = ContextVar(
     "invocation_usage", default=None
 )
+
+_DRIFT_WARN_RATIO = 0.30
 
 
 @dataclass
@@ -21,24 +31,59 @@ class InvocationUsage:
     total_output_tokens: int = 0
     llm_calls: list[dict[str, Any]] = field(default_factory=list)
 
-    def add_call(self, role: str, message: BaseMessage) -> None:
+    def add_call(
+        self,
+        role: str,
+        message: BaseMessage,
+        *,
+        model: str | None = None,
+        estimated_input_tokens: int | None = None,
+    ) -> None:
         usage = extract_token_usage(message)
-        inp = usage.get("input_tokens")
+        provider_inp = usage.get("input_tokens")
         out = usage.get("output_tokens")
+
+        if isinstance(provider_inp, int) and provider_inp >= 0:
+            inp = provider_inp
+            if estimated_input_tokens is not None and estimated_input_tokens > 0:
+                diff = abs(provider_inp - estimated_input_tokens)
+                if estimated_input_tokens > 0 and diff / estimated_input_tokens > _DRIFT_WARN_RATIO:
+                    logger.warning(
+                        "Token drift for %s: provider=%d, tiktoken_estimate=%d (%.0f%% off)",
+                        role, provider_inp, estimated_input_tokens,
+                        diff / estimated_input_tokens * 100,
+                    )
+        elif isinstance(estimated_input_tokens, int) and estimated_input_tokens > 0:
+            inp = estimated_input_tokens
+            logger.debug(
+                "Provider returned no input tokens for %s; using tiktoken estimate=%d",
+                role, estimated_input_tokens,
+            )
+        else:
+            inp = None
+
         if isinstance(inp, int) and inp >= 0:
             self.total_input_tokens += inp
         if isinstance(out, int) and out >= 0:
             self.total_output_tokens += out
-        self.llm_calls.append(
-            {
-                "role": role,
-                "usage": {
-                    "input_tokens": inp,
-                    "output_tokens": out,
-                    "total_tokens": usage.get("total_tokens"),
-                },
-            }
-        )
+
+        tot = usage.get("total_tokens")
+        if tot is None and inp is not None and out is not None:
+            tot = inp + out
+
+        entry: dict[str, Any] = {
+            "role": role,
+            "usage": {
+                "input_tokens": inp,
+                "output_tokens": out,
+                "total_tokens": tot,
+            },
+        }
+        if model:
+            entry["model"] = model
+        if estimated_input_tokens is not None:
+            entry["estimated_input_tokens"] = estimated_input_tokens
+        self.llm_calls.append(entry)
 
 
 def extract_token_usage(message: BaseMessage) -> dict[str, int | None]:
@@ -86,9 +131,19 @@ def get_invocation_usage() -> InvocationUsage | None:
     return _invocation_usage.get()
 
 
-def record_llm_message(role: str, message: BaseMessage) -> None:
-    """Record usage from one LLM response; no-op if no active invocation."""
+def record_llm_message(
+    role: str,
+    message: BaseMessage,
+    *,
+    model: str | None = None,
+    estimated_input_tokens: int | None = None,
+) -> None:
+    """Record usage from one LLM response; no-op if no active invocation.
+
+    *estimated_input_tokens* is the pre-call tiktoken count of the prompt.
+    When the provider omits input-token metadata, this value is used as fallback.
+    """
     u = get_invocation_usage()
     if u is None:
         return
-    u.add_call(role, message)
+    u.add_call(role, message, model=model, estimated_input_tokens=estimated_input_tokens)

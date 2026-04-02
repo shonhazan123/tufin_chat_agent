@@ -13,6 +13,7 @@ from app.api.routes.health import router as health_router
 from app.api.routes.tasks import router as tasks_router
 from app.cache.redis_cache import RedisCache
 from app.settings import get_settings
+from app.db.migrate import upgrade_database
 from app.db.session import dispose_engine, init_db
 from app.middleware.error_handler import register_exception_handlers
 from app.observability.logging import setup_logging
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     settings = get_settings()
     setup_logging()
+    upgrade_database(settings.database_url)
     await init_db(settings.database_url)
 
     redis_client: Redis | None = None

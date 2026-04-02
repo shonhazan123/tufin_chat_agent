@@ -26,6 +26,7 @@ export function ChatShell() {
   const [debugTaskId, setDebugTaskId] = useState<string | null>(null)
   const [health, setHealth] = useState<HealthStatus>('unknown')
   const [agentReady, setAgentReady] = useState<boolean | null>(null)
+  const [provider, setProvider] = useState<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval>>(null)
 
   useEffect(() => {
@@ -33,13 +34,15 @@ export function ChatShell() {
     const check = async () => {
       try {
         const res = await fetch(`${base}/api/v1/health`)
-        if (!res.ok) { setHealth('offline'); setAgentReady(false); return }
-        const data = (await res.json()) as { status?: string; agent?: string }
+        if (!res.ok) { setHealth('offline'); setAgentReady(false); setProvider(null); return }
+        const data = (await res.json()) as { status?: string; agent?: string; provider?: string }
         setHealth(data.status === 'ok' ? 'ok' : 'degraded')
         setAgentReady(data.agent === 'ok')
+        setProvider(data.provider ?? null)
       } catch {
         setHealth('offline')
         setAgentReady(false)
+        setProvider(null)
       }
     }
     void check()
@@ -165,7 +168,7 @@ export function ChatShell() {
                       ? 'border-[#d97706]/40 bg-[#d97706]/10 text-[#fcd34d]'
                       : 'border-[#3f3f46] bg-[#1c1c1f] text-[#71717a]'
               }`}
-              title={`${base} — status: ${health}, agent: ${agentReady ? 'ready' : 'not ready'}`}
+              title={`${base} — status: ${health}, agent: ${agentReady ? 'ready' : 'not ready'}${provider ? `, provider: ${provider}` : ''}`}
             >
               <span className={`inline-block h-2 w-2 rounded-full ${
                 health === 'ok' && agentReady
@@ -177,7 +180,7 @@ export function ChatShell() {
                       : 'bg-[#71717a]'
               }`} />
               {health === 'ok' && agentReady
-                ? 'Active'
+                ? `Active · ${provider === 'ollama' ? 'Ollama' : 'OpenAI'}`
                 : health === 'offline'
                   ? 'Offline'
                   : agentReady === false

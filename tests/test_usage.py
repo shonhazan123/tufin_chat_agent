@@ -35,3 +35,42 @@ def test_record_llm_message_noop_without_context():
     msg = MagicMock()
     msg.usage_metadata = {}
     record_llm_message("planner", msg)  # no crash
+
+
+def test_estimated_input_tokens_stored_in_entry():
+    u = InvocationUsage()
+    msg = AIMessage(content="hi")
+    msg.usage_metadata = {"input_tokens": 50, "output_tokens": 10, "total_tokens": 60}
+    u.add_call("planner", msg, estimated_input_tokens=48)
+    assert u.llm_calls[0]["estimated_input_tokens"] == 48
+    assert u.llm_calls[0]["usage"]["input_tokens"] == 50
+
+
+def test_estimated_fallback_when_provider_returns_none():
+    """When provider returns no input tokens, the estimate is used as fallback."""
+    u = InvocationUsage()
+    msg = AIMessage(content="hi")
+    msg.usage_metadata = {}
+    u.add_call("planner", msg, estimated_input_tokens=100)
+    assert u.total_input_tokens == 100
+    assert u.llm_calls[0]["usage"]["input_tokens"] == 100
+
+
+def test_provider_takes_priority_over_estimate():
+    """Provider input_tokens are used when available (not the estimate)."""
+    u = InvocationUsage()
+    msg = AIMessage(content="hi")
+    msg.usage_metadata = {"input_tokens": 42, "output_tokens": 8, "total_tokens": 50}
+    u.add_call("planner", msg, estimated_input_tokens=100)
+    assert u.total_input_tokens == 42
+    assert u.llm_calls[0]["usage"]["input_tokens"] == 42
+
+
+def test_no_estimate_and_no_provider_gives_none():
+    """When neither provider nor estimate is available, input stays None."""
+    u = InvocationUsage()
+    msg = AIMessage(content="hi")
+    msg.usage_metadata = {}
+    u.add_call("planner", msg)
+    assert u.total_input_tokens == 0
+    assert u.llm_calls[0]["usage"]["input_tokens"] is None

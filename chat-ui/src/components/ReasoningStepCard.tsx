@@ -100,6 +100,12 @@ export function ReasoningStepCard({ step, depth = 0 }: Props) {
           <span className={`h-2 w-2 shrink-0 rounded-full ${colors.dot}`} />
           <span className="font-medium text-[#e4e4e7]">{step.label}</span>
 
+          {step.model && (
+            <span className="rounded bg-[#27272a] px-1.5 py-0.5 text-[0.625rem] font-medium text-[#fbbf24]">
+              {step.model}
+            </span>
+          )}
+
           {step.status === 'error' && (
             <span className="rounded bg-[#dc2626]/20 px-1.5 py-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-[#fca5a5]">
               error

@@ -188,14 +188,17 @@ def _json_pretty(obj: Any) -> str:
     return json.dumps(obj, indent=2, default=str, ensure_ascii=False)
 
 
-def _pop_tokens_for_role(llm_calls: list[dict[str, Any]], role: str) -> dict[str, int | None] | None:
-    """Find and remove the first matching llm_call entry; return its tokens."""
+def _pop_call_for_role(
+    llm_calls: list[dict[str, Any]], role: str,
+) -> tuple[dict[str, int | None] | None, str | None]:
+    """Find and remove the first matching llm_call entry; return (tokens, model)."""
     for i, call in enumerate(llm_calls):
         if call.get("role") == role:
             u = call.get("usage") or {}
+            model = call.get("model")
             llm_calls.pop(i)
-            return {"input": u.get("input_tokens"), "output": u.get("output_tokens")}
-    return None
+            return {"input": u.get("input_tokens"), "output": u.get("output_tokens")}, model
+    return None, None
 
 
 def _build_planner_input(obs: dict[str, Any], task_text: str) -> str:
@@ -291,6 +294,7 @@ def _build_reasoning_tree(obs: dict[str, Any], task_text: str) -> list[Reasoning
 
     # --- 1. Planner step ---
     planner_ms = obs.get("planner_duration_ms")
+    planner_tokens, planner_model = _pop_call_for_role(llm_calls, "planner")
     planner_label = f"Planner ({planner_ms} ms)" if planner_ms is not None else "Planner"
 
     planner_input = _build_planner_input(obs, task_text)
@@ -301,8 +305,9 @@ def _build_reasoning_tree(obs: dict[str, Any], task_text: str) -> list[Reasoning
         label=planner_label,
         node_type="planner",
         status="ok" if not obs.get("error_context", "").startswith("Planner") else "error",
+        model=planner_model,
         duration_ms=planner_ms,
-        tokens=_pop_tokens_for_role(llm_calls, "planner"),
+        tokens=planner_tokens,
         input_summary=planner_input,
         output_summary=planner_output,
     ))
@@ -323,6 +328,10 @@ def _build_reasoning_tree(obs: dict[str, Any], task_text: str) -> list[Reasoning
                 tool_label = f"{agent_name} ({tool_ms} ms)" if tool_ms is not None else agent_name
                 tool_status = entry.get("status", "ok")
 
+                tool_tokens, tool_model = _pop_call_for_role(llm_calls, f"tool:{agent_name}")
+                if tool_tokens is None:
+                    tool_tokens, tool_model = _pop_call_for_role(llm_calls, agent_name)
+
                 plan_task = plan_by_id.get(tid, {})
                 tool_input = _build_tool_input(plan_task)
 
@@ -337,8 +346,9 @@ def _build_reasoning_tree(obs: dict[str, Any], task_text: str) -> list[Reasoning
                     label=tool_label,
                     node_type="tool",
                     status=tool_status,
+                    model=tool_model,
                     duration_ms=tool_ms,
-                    tokens=_pop_tokens_for_role(llm_calls, agent_name),
+                    tokens=tool_tokens,
                     input_summary=tool_input,
                     output_summary=tool_output,
                     wave=wave_num,
@@ -357,6 +367,7 @@ def _build_reasoning_tree(obs: dict[str, Any], task_text: str) -> list[Reasoning
 
     # --- 3. Responder step ---
     responder_ms = obs.get("responder_duration_ms")
+    responder_tokens, responder_model = _pop_call_for_role(llm_calls, "responder")
     responder_label = f"Responder ({responder_ms} ms)" if responder_ms is not None else "Responder"
     responder_input = _build_responder_input(obs)
     final_text = obs.get("response", "")
@@ -366,8 +377,9 @@ def _build_reasoning_tree(obs: dict[str, Any], task_text: str) -> list[Reasoning
         label=responder_label,
         node_type="responder",
         status="ok" if not obs.get("failure_flag") else "error",
+        model=responder_model,
         duration_ms=responder_ms,
-        tokens=_pop_tokens_for_role(llm_calls, "responder"),
+        tokens=responder_tokens,
         input_summary=responder_input,
         output_summary=final_text or None,
     ))

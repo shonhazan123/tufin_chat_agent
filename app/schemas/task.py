@@ -41,6 +41,7 @@ class ReasoningStep(BaseModel):
     label: str
     node_type: str
     status: str
+    model: str | None = None
     duration_ms: int | None = None
     tokens: dict[str, int | None] | None = None
     input_summary: str | None = None

@@ -13,7 +13,7 @@ Initialization happens in strict order to avoid empty prompt constants and circu
 6. agent/tool_cache.py    → init_llm_cache() sets up SQLiteCache
 7. agent/context.py        → conversation_context singleton created
 8. agent/graph.py          → LangGraph compiled
-9. app/main.py             → FastAPI lifespan: init SQLite tables, Redis client, then `agent.startup.startup()`; uvicorn starts (see [docker.md](docker.md) for containers; [local-debug.md](local-debug.md) for debugging API + agent with the UI on Vite)
+9. app/main.py             → FastAPI lifespan: Alembic `upgrade head` for file-backed SQLite (skip for `:memory:` tests), then `init_db` / `create_all`, Redis client, then `agent.startup.startup()`; uvicorn starts (see [docker.md](docker.md) for containers; [local-debug.md](local-debug.md) for debugging API + agent with the UI on Vite)
 ```
 
 ## Request Lifecycle
@@ -85,7 +85,16 @@ Graph returns to API layer
   └── Return TaskSubmitResponse to client (task_id, final_answer, latency_ms, token totals only). Full observability: GET /api/v1/tasks/{task_id} → TaskDetailResponse
 ```
 
-Planner, responder, and tool LLM calls call `agent.usage.record_llm_message` so totals aggregate for the invocation.
+Every LLM invocation site (planner, responder, and tool param-extraction calls) first runs `count_chat_tokens(messages, model)` via `agent.token_counter` (tiktoken-based) to compute a pre-call input-token estimate. This estimate is:
+- Logged at INFO level before the call (e.g. `Planner LLM call: estimated_input_tokens=482`)
+- Passed as `estimated_input_tokens` to `record_llm_message`
+
+`agent.usage.record_llm_message` then:
+1. Extracts the provider's reported `input_tokens` from the response metadata (when available)
+2. If the provider returned `None` (common with Ollama), uses the tiktoken estimate as fallback
+3. Logs a warning when provider and estimate diverge by >30%
+
+This ensures token observability data is never blank, even with providers that omit usage metadata.
 
 ## Observability (metrics vs persisted trace)
 

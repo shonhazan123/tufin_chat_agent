@@ -15,7 +15,8 @@ A **Multi-Tool Agent REST API** that accepts natural language tasks, plans and e
 - `uvicorn app.main:app --reload` — start dev server
 - **Debug:** Run and Debug → `API + agent (uvicorn, debug)` (starts Redis via `preLaunchTask`, then uvicorn; see `docs/project-instruction/local-debug.md`); UI separately: `npm run dev` in `chat-ui/`
 - `pytest tests/` — run test suite
-- `docker compose up` — full service
+- `docker compose up` — full stack (OpenAI when `LLM_PROVIDER=openai` in `.env`)
+- `docker compose --profile ollama up` — same + Ollama container + auto-pull (see `docs/project-instruction/docker.md`)
 
 ## API Endpoints
 | Method | Path | Description |

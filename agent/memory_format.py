@@ -2,30 +2,29 @@
 
 from __future__ import annotations
 
-# Planner: last messages + rolling summary only (no key facts).
-# Budget increased from 200 to accommodate follow-up context signals
-# (previous tool names, resolved references).
+from agent.token_counter import count_text_tokens
+
 PLANNER_MEMORY_MAX_TOKENS = 300
 
-# Responder: user key facts + rolling summary only (no full recent transcript here).
 RESPONDER_MEMORY_MAX_TOKENS = 120
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough token estimate (Latin/English prose); avoids extra dependencies."""
+    """Token count via tiktoken (accurate for OpenAI models; reasonable fallback for others)."""
     if not text or not text.strip():
         return 0
-    return max(1, len(text.strip()) // 4)
+    return max(1, count_text_tokens(text.strip()))
 
 
 def _truncate_to_token_budget(text: str, max_tokens: int) -> str:
     if max_tokens <= 0 or not text:
         return ""
     t = text.strip()
-    max_chars = max_tokens * 4
-    if len(t) <= max_chars:
+    if estimate_tokens(t) <= max_tokens:
         return t
-    return t[: max_chars - 3].rstrip() + "..."
+    ratio = max_tokens / max(1, estimate_tokens(t))
+    safe_len = max(1, int(len(t) * ratio * 0.9))
+    return t[:safe_len].rstrip() + "..."
 
 
 def build_planner_context_block(

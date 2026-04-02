@@ -59,17 +59,18 @@ Both Ollama and OpenAI use `ChatOpenAI` from `langchain-openai`. At **process st
 | `agent/state.py` | AgentState TypedDict with merge/append/add reducers |
 | `agent/prompts.py` | Planner, responder, summarizer system prompts |
 | `agent/context.py` | Conversation singleton: tagged window, `summary`, `user_key_facts`; background JSON summarizer after each reply |
-| `agent/memory_format.py` | `build_planner_context_block` (recent + summary); `build_responder_memory_block` (key facts + summary); separate token caps |
-| `agent/usage.py` | Per-invocation LLM token totals (`record_llm_message`); planner, responder, and tool LLM calls |
+| `agent/memory_format.py` | `build_planner_context_block` (recent + summary); `build_responder_memory_block` (key facts + summary); separate token caps; `estimate_tokens` uses tiktoken via `token_counter` |
+| `agent/token_counter.py` | Accurate pre-call token counting via `tiktoken`; `count_chat_tokens` (messages + overhead), `count_text_tokens` (plain text); fallback for models without tiktoken encoding |
+| `agent/usage.py` | Per-invocation LLM token totals (`record_llm_message`); accepts `estimated_input_tokens` (pre-call tiktoken count) and uses it as fallback when provider metadata is absent |
 | `agent/graph_nodes.py` | planner_node, executor_node, response_node, routing |
 | `agent/graph.py` | LangGraph StateGraph compilation with conditional edges |
 | `agent/startup.py` | Ordered initialization sequence + validation |
 | `agent/tools/base.py` | ToolSpec, BaseToolAgent, BaseFunctionTool, AgentRegistry |
 | `agent/tools/*.py` | Individual tool implementations (auto-discovered) |
 | `app/settings.py` | Pydantic `Settings` for API, database, Redis, CORS (env-driven) |
-| `app/main.py` | FastAPI factory: `/api/v1` routes, CORS, lifespan (SQLite init, Redis, `agent.startup`) |
+| `app/main.py` | FastAPI factory: `/api/v1` routes, CORS, lifespan (Alembic upgrade on file SQLite, `init_db`, Redis, `agent.startup`) |
 | `app/services/task_service.py` | Orchestrates task rows, Redis response cache, and `app/integrations/agent_runner` |
-| `app/db/` | Async SQLAlchemy + SQLite: tasks store executor `trace_json`, full `observability_json`, `latency_ms`, token totals (`task_repository.py`, models; `session.py` parses `DATABASE_URL` with `make_url` for Docker and local paths) |
+| `app/db/` | Async SQLAlchemy + SQLite: tasks store executor `trace_json`, full `observability_json`, `latency_ms`, token totals (`task_repository.py`, models). `migrate.py` runs Alembic to *head* on startup for on-disk DBs (Docker volume-safe); `session.py` parses `DATABASE_URL` with `make_url` |
 | `app/cache/redis_cache.py` | Redis GET/SET for cached final answers (TTL) |
 | `app/integrations/agent_runner.py` | Wraps timed `graph.ainvoke`, builds `observability_json`, resets usage accumulator; conversation context |
 | `main.py` | Re-exports `app` for `uvicorn main:app` |
@@ -82,7 +83,7 @@ The [`chat-ui/`](../../chat-ui/) SPA calls **`POST /api/v1/task`** (slim metrics
 
 ## Docker
 
-Redis, the FastAPI app, and the static chat UI are orchestrated with **Docker Compose**; SQLite task data is stored in a volume. See [docker.md](docker.md) for run commands, pre-built image workflow, and Ollama-on-host notes.
+Redis, the FastAPI app, and the static chat UI are orchestrated with **Docker Compose**; SQLite task data is stored in a volume. The **`ollama`** Compose profile (`docker compose --profile ollama up`) starts an Ollama sidecar, a persistent model volume, and **`ollama-pull`** (background model download; it does not block the API). See [docker.md](docker.md) for run commands, pre-built images, and Ollama on the host.
 
 ## Local debugging
 

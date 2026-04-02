@@ -1,6 +1,9 @@
 # Full stack: Redis, FastAPI API, static chat UI (nginx).
-# 1. Copy .env.example → .env and set API keys / LLM_PROVIDER (see docs/project-instruction/docker.md).
-# 2. docker compose up --build
+#
+# OpenAI (default):  docker compose up --build
+# Ollama in Docker:  docker compose --profile ollama up --build
+#                    See docs/project-instruction/docker.md for .env values.
+#
 # API: http://127.0.0.1:8000  UI: http://127.0.0.1:8080  Redis: localhost:6379
 
 services:
@@ -14,24 +17,69 @@ services:
       timeout: 3s
       retries: 5
 
+  # Sidecar LLM — only when using: docker compose --profile ollama up
+  ollama:
+    profiles:
+      - ollama
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "/bin/ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    # GPU (Linux / Windows WSL2 + NVIDIA Container Toolkit): uncomment below.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # Pulls the default model into the ollama volume (does not block the API).
+  # Set OLLAMA_PULL_MODEL in .env to match config/ollama.yaml if you change models.
+  ollama-pull:
+    profiles:
+      - ollama
+    image: ollama/ollama:latest
+    restart: "no"
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      MODEL_TO_PULL: ${OLLAMA_PULL_MODEL:-}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+          set -e
+          MODEL="$${MODEL_TO_PULL:-qwen2.5:7b-instruct-q4_K_M}"
+          exec /bin/ollama pull "$$MODEL"
+    depends_on:
+      ollama:
+        condition: service_healthy
+
   api:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
-    # Loads LLM_PROVIDER, OPENAI_API_KEY, tool keys, etc. into the container environment.
     env_file:
       - .env
     environment:
-      # Override host .env for in-compose networking and UI origins (see docs/project-instruction/docker.md).
+      # Resolved from host .env at compose parse time (override same keys from env_file).
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://localhost:11434/v1}
       DATABASE_URL: sqlite+aiosqlite:////data/app.db
       REDIS_URL: redis://redis:6379/0
       REDIS_OPTIONAL: "false"
       CORS_ORIGINS: http://localhost,http://127.0.0.1,http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173
     volumes:
       - sqlite_data:/data
-      # Image build omits .env; mount so load_dotenv() and app Settings see /app/.env at runtime.
       - ./.env:/app/.env:ro
     depends_on:
       redis:
@@ -55,9 +103,7 @@ services:
       context: ./chat-ui
       dockerfile: Dockerfile
       args:
-        # URL must be reachable from the tester’s browser (host machine), not from inside Docker.
         VITE_API_BASE_URL: http://127.0.0.1:8000
-        # Optional; set VITE_API_KEY in project .env if the API uses API_KEY (same value as server).
         VITE_API_KEY: ${VITE_API_KEY:-}
     ports:
       - "8080:80"
@@ -67,3 +113,4 @@ services:
 
 volumes:
   sqlite_data:
+  ollama_data:

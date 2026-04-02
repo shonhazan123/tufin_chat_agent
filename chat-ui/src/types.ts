@@ -28,6 +28,7 @@ export type ReasoningStep = {
   label: string
   node_type: 'planner' | 'tool' | 'responder' | 'error'
   status: 'ok' | 'error'
+  model?: string | null
   duration_ms?: number | null
   tokens?: { input: number | null; output: number | null } | null
   input_summary?: string | null

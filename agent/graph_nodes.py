@@ -12,6 +12,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent.context import conversation_context
 from agent.llm import build_llm
+from agent.token_counter import count_chat_tokens
 from agent.usage import record_llm_message
 from agent.memory_format import (
     PLANNER_MEMORY_MAX_TOKENS,
@@ -45,16 +46,20 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
     if planner_mem:
         parts.append(f"[Planner memory — last messages + summary; ~{PLANNER_MEMORY_MAX_TOKENS} token budget]\n{planner_mem}")
 
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content="\n\n".join(parts)),
+    ]
+    estimated_input = count_chat_tokens(messages, model=llm.model_name)
+    logger.info("Planner LLM call: estimated_input_tokens=%d", estimated_input)
+
     t0 = time.perf_counter()
     result = await asyncio.wait_for(
-        llm.ainvoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content="\n\n".join(parts)),
-        ]),
+        llm.ainvoke(messages),
         timeout=cfg["executor"]["tool_timeout_seconds"],
     )
     planner_ms = int((time.perf_counter() - t0) * 1000)
-    record_llm_message("planner", result)
+    record_llm_message("planner", result, model=llm.model_name, estimated_input_tokens=estimated_input)
 
     text = result.content.strip()
     if text.startswith("```"):
@@ -270,15 +275,19 @@ async def response_node(state: dict[str, Any]) -> dict[str, Any]:
         # )
         content = "\n\n".join(parts)
 
+    messages = [
+        SystemMessage(content=RESPONDER_SYSTEM),
+        HumanMessage(content=content),
+    ]
+    estimated_input = count_chat_tokens(messages, model=llm.model_name)
+    logger.info("Responder LLM call: estimated_input_tokens=%d", estimated_input)
+
     t0 = time.perf_counter()
     result = await asyncio.wait_for(
-        llm.ainvoke([
-            SystemMessage(content=RESPONDER_SYSTEM),
-            HumanMessage(content=content),
-        ]),
+        llm.ainvoke(messages),
         timeout=cfg["executor"]["tool_timeout_seconds"],
     )
     responder_ms = int((time.perf_counter() - t0) * 1000)
-    record_llm_message("responder", result)
+    record_llm_message("responder", result, model=llm.model_name, estimated_input_tokens=estimated_input)
 
     return {"response": result.content, "responder_duration_ms": responder_ms}
