@@ -22,8 +22,7 @@ def build_graph():
     Graph topology:
         START -> planner -> executor -> [route_after_executor]
             "continue" -> executor   (next wave of parallel tasks)
-            "retry"    -> planner    (re-plan with error context)
-            "fail"     -> mark_failure -> responder
+            "fail"     -> mark_failure -> responder  (tool/planner errors; no re-plan loop)
             "done"     -> responder -> END  (includes empty plan: no tools, straight to responder)
     """
     graph = StateGraph(AgentState)
@@ -41,7 +40,6 @@ def build_graph():
         route_after_executor,
         {
             "continue": "executor",
-            "retry": "planner",
             "fail": "mark_failure",
             "done": "responder",
         },

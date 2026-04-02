@@ -1,13 +1,28 @@
-"""Unit converter — LLM extracts units and value, then deterministic conversion (+ currency API)."""
+"""Unit converter — LLM fills value/units only when planner sent no params; then convert."""
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 from typing import Any
 
 import aiohttp
+from langchain_core.messages import HumanMessage, SystemMessage
 
+from agent.llm import get_llm_semaphore
+from agent.usage import record_llm_message
 from agent.yaml_config import load_config
-from agent.tools.base import BaseToolAgent, ToolSpec, registry
+from agent.tools.base import (
+    BaseToolAgent,
+    ToolInvocation,
+    ToolParamValidationError,
+    ToolSpec,
+    registry,
+    strip_json_fence,
+)
+
+logger = logging.getLogger(__name__)
 
 SPEC = ToolSpec(
     name="unit_converter",
@@ -25,18 +40,27 @@ SPEC = ToolSpec(
         "to_unit": "str — target unit (e.g. 'miles', 'kg', 'fahrenheit', 'EUR')",
     },
     system_prompt=(
-        "You output JSON for the unit-conversion backend. The planner should pass "
-        "value/from_unit/to_unit in 'params'; you run when those are missing or conversion "
-        "failed — then infer or fix from the user request, conversation summary, sub-task, "
-        "prior tool results, and any error message.\n\n"
-        "Output ONLY a JSON object with these fields:\n"
+        "## Role\n"
+        "You are a **parameter specialist** for unit conversion. You emit **one JSON object** "
+        "with `value`, `from_unit`, and `to_unit` for the conversion engine.\n\n"
+        "## Priority order (resolve conflicts using this)\n"
+        "1. **Strict JSON** — output only the required JSON object.\n"
+        "2. **Schema validity** — include `value`, `from_unit`, `to_unit` in correct types.\n"
+        "3. **User intent** — infer the most likely units/value from context.\n\n"
+        "## When you run\n"
+        "The planner should supply `params`. **You are invoked when fields are missing or "
+        "invalid.** Infer from: the user request, `context_summary`, `sub_task`, and "
+        "prior tool results.\n\n"
+        "## Output contract\n"
+        "Return **only**:\n"
         '  {"value": <number>, "from_unit": "<string>", "to_unit": "<string>"}\n\n'
-        "Rules:\n"
-        "- Use standard short unit symbols where possible (km, miles, kg, lb, USD, EUR, "
-        "celsius, fahrenheit, kelvin, etc.).\n"
-        "- If prior results contain a number to convert, use that value.\n"
-        "- For currency, use three-letter codes (USD, EUR, …).\n"
-        "- Output raw JSON only — no markdown, no explanation.\n"
+        "## Rules\n"
+        "1. **value** — Numeric magnitude to convert (float).\n"
+        "2. **Units** — Use conventional short symbols (e.g. km, lb, °C implied via unit "
+        "names the backend accepts).\n"
+        "3. **Currency** — ISO 4217 three-letter codes (USD, EUR, …).\n\n"
+        "## Format\n"
+        "Raw JSON only — no markdown fences, no commentary.\n"
     ),
     default_ttl_seconds=60,
 )
@@ -91,6 +115,22 @@ def _normalize(unit: str) -> str:
     return mapping.get(lower, unit.strip().upper() if lower in {c.lower() for c in _CURRENCIES} else lower)
 
 
+def _uc_params_valid(params: dict[str, Any]) -> bool:
+    if "value" not in params:
+        return False
+    try:
+        float(params["value"])
+    except (TypeError, ValueError):
+        return False
+    fu = params.get("from_unit", "")
+    tu = params.get("to_unit", "")
+    if not isinstance(fu, str) or not str(fu).strip():
+        return False
+    if not isinstance(tu, str) or not str(tu).strip():
+        return False
+    return True
+
+
 def _convert_temperature(value: float, from_u: str, to_u: str) -> tuple[float, str]:
     """Convert between C, F, K."""
     conversions = {
@@ -137,9 +177,45 @@ async def _convert_currency(
 class UnitConverterAgent(BaseToolAgent):
     SYSTEM = UNIT_CONVERTER_SYSTEM
 
-    async def _tool_executer(self, params: dict[str, Any]) -> dict[str, Any]:
-        if "value" not in params:
-            raise ValueError("Missing 'value' in extracted params")
+    async def _llm_json_params_once(self, inv: ToolInvocation) -> dict[str, Any]:
+        parts = [
+            f"User request: {inv.user_msg}",
+            f"Conversation context (summary): {inv.context_summary or '(none)'}",
+            f"Sub-task from plan: {inv.sub_task}",
+            f"Prior tool results: {json.dumps(inv.prior_results, default=str)}",
+            "Reply with a single JSON object only — no markdown, no fences, "
+            "no explanation outside the JSON.",
+        ]
+        human_content = "\n".join(parts)
+        async with get_llm_semaphore():
+            params_msg = await asyncio.wait_for(
+                self.llm.ainvoke([
+                    SystemMessage(content=self.SYSTEM),
+                    HumanMessage(content=human_content),
+                ]),
+                timeout=self.timeout,
+            )
+        record_llm_message(f"tool:{self.spec.name}", params_msg)
+        raw = strip_json_fence(params_msg.content)
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("JSON root must be an object")
+        return parsed
+
+    async def _tool_executor(self, inv: ToolInvocation) -> dict[str, Any]:
+        if not inv.planner_params:
+            params = await self._llm_json_params_once(inv)
+        else:
+            params = dict(inv.planner_params)
+
+        if not _uc_params_valid(params):
+            raise ToolParamValidationError(
+                "unit_converter: missing or invalid value/from_unit/to_unit"
+            )
+
+        return await self._convert_backend(params)
+
+    async def _convert_backend(self, params: dict[str, Any]) -> dict[str, Any]:
         value = float(params["value"])
         from_unit = _normalize(str(params.get("from_unit", "")))
         to_unit = _normalize(str(params.get("to_unit", "")))

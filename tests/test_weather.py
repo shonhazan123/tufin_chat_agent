@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.tools.base import ToolInvocation
 from agent.tools.weather import WeatherAgent
 
 
@@ -35,8 +36,8 @@ def _make_aiohttp_mock(json_data):
 
 
 @pytest.mark.asyncio
-async def test_tool_executer_returns_schema(weather_agent):
-    """_tool_executer should return all required output fields (WeatherAPI path)."""
+async def test_tool_executor_returns_schema(weather_agent):
+    """_tool_executor should return all required output fields (WeatherAPI path)."""
     json_data = {
         "current": {
             "temp_c": 22.0,
@@ -48,7 +49,9 @@ async def test_tool_executer_returns_schema(weather_agent):
     mock_session = _make_aiohttp_mock(json_data)
 
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        result = await weather_agent._tool_executer({"city": "London"})
+        result = await weather_agent._tool_executor(
+            ToolInvocation.from_parts(planner_params={"city": "London"})
+        )
 
     assert result["temp_c"] == 22.0
     assert result["temp_f"] == 71.6
@@ -57,8 +60,11 @@ async def test_tool_executer_returns_schema(weather_agent):
 
 
 @pytest.mark.asyncio
-async def test_tool_executer_default_city(weather_agent):
-    """Missing city param should default to London."""
+async def test_tool_executor_default_city(weather_agent):
+    """Empty planner params: tool LLM supplies city (mocked); API defaults apply."""
+    weather_agent.llm.ainvoke = AsyncMock(
+        return_value=MagicMock(content='{"city": "London", "units": "metric"}')
+    )
     json_data = {
         "current": {
             "temp_c": 15,
@@ -70,6 +76,12 @@ async def test_tool_executer_default_city(weather_agent):
     mock_session = _make_aiohttp_mock(json_data)
 
     with patch("aiohttp.ClientSession", return_value=mock_session):
-        result = await weather_agent._tool_executer({})
+        result = await weather_agent._tool_executor(
+            ToolInvocation.from_parts(
+                task="weather",
+                sub_task="get",
+                planner_params={},
+            )
+        )
 
     assert result["city_name"] == "London"

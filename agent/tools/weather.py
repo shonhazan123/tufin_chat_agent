@@ -1,14 +1,28 @@
-"""Weather tool — LLM-powered parameter extraction + aiohttp API call."""
+"""Weather tool — LLM fills JSON only when the planner sent no params; then HTTP."""
 
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 from typing import Any
 
 import aiohttp
+from langchain_core.messages import HumanMessage, SystemMessage
 
+from agent.llm import get_llm_semaphore
+from agent.usage import record_llm_message
 from agent.yaml_config import load_config
-from agent.tools.base import BaseToolAgent, ToolSpec, registry
+from agent.tools.base import (
+    BaseToolAgent,
+    ToolInvocation,
+    ToolParamValidationError,
+    ToolSpec,
+    registry,
+    strip_json_fence,
+)
+
+logger = logging.getLogger(__name__)
 
 SPEC = ToolSpec(
     name="weather",
@@ -25,16 +39,26 @@ SPEC = ToolSpec(
         "units": "str — 'metric' or 'imperial'",
     },
     system_prompt=(
-        "You output JSON for the weather API. The planner should pass city and units in "
-        "'params'; you run when those are missing or the API call failed — then infer or "
-        "correct city/units from the user request, conversation summary, sub-task, prior "
-        "results, and any error message.\n\n"
-        "Output ONLY a JSON object with these fields:\n"
-        '  {"city": "<city name>", "units": "metric"}\n\n'
-        "Rules:\n"
-        "- Default units to 'metric' unless the user explicitly asks for Fahrenheit/imperial.\n"
-        "- If prior results contain a city name, use it.\n"
-        "- Output raw JSON only — no markdown, no explanation.\n"
+        "## Role\n"
+        "You are a **parameter specialist** for the weather tool. You produce **one JSON "
+        "object** with `city` and `units` for a weather API call.\n\n"
+        "## Priority order (resolve conflicts using this)\n"
+        "1. **Strict JSON** — output only the required JSON object.\n"
+        "2. **Schema validity** — `city` is a non-empty string; `units` is `metric` or `imperial`.\n"
+        "3. **User intent** — infer the intended location and units from context.\n\n"
+        "## When you run\n"
+        "The planner should supply `params`. **You are invoked when those fields are "
+        "missing or invalid.** Infer values from: the user request, `context_summary`, "
+        "`sub_task`, and prior tool results.\n\n"
+        "## Output contract\n"
+        "Return **only**:\n"
+        '  {"city": "<city or place name>", "units": "metric" | "imperial"}\n\n'
+        "## Rules\n"
+        "1. **city** — Clear, geocodable place name; prefer what the user stated.\n"
+        "2. **units** — Use `metric` unless the user clearly wants Fahrenheit / US customary "
+        "(then `imperial`).\n\n"
+        "## Format\n"
+        "Raw JSON only — no markdown fences, no commentary.\n"
     ),
     default_ttl_seconds=300,
 )
@@ -42,11 +66,62 @@ SPEC = ToolSpec(
 WEATHER_SYSTEM = SPEC.system_prompt
 
 
+def _weather_params_usable(params: dict[str, Any]) -> bool:
+    city = params.get("city")
+    if city is not None and (not isinstance(city, str) or not city.strip()):
+        return False
+    units = params.get("units")
+    if units is not None:
+        if not isinstance(units, str):
+            return False
+        if units.strip().lower() not in ("metric", "imperial"):
+            return False
+    return True
+
+
 @registry.register(SPEC)
 class WeatherAgent(BaseToolAgent):
     SYSTEM = WEATHER_SYSTEM
 
-    async def _tool_executer(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _llm_json_params_once(self, inv: ToolInvocation) -> dict[str, Any]:
+        parts = [
+            f"User request: {inv.user_msg}",
+            f"Conversation context (summary): {inv.context_summary or '(none)'}",
+            f"Sub-task from plan: {inv.sub_task}",
+            f"Prior tool results: {json.dumps(inv.prior_results, default=str)}",
+            "Reply with a single JSON object only — no markdown, no fences, "
+            "no explanation outside the JSON.",
+        ]
+        human_content = "\n".join(parts)
+        async with get_llm_semaphore():
+            params_msg = await asyncio.wait_for(
+                self.llm.ainvoke([
+                    SystemMessage(content=self.SYSTEM),
+                    HumanMessage(content=human_content),
+                ]),
+                timeout=self.timeout,
+            )
+        record_llm_message(f"tool:{self.spec.name}", params_msg)
+        raw = strip_json_fence(params_msg.content)
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("JSON root must be an object")
+        return parsed
+
+    async def _tool_executor(self, inv: ToolInvocation) -> dict[str, Any]:
+        if not inv.planner_params:
+            params = await self._llm_json_params_once(inv)
+        else:
+            params = dict(inv.planner_params)
+
+        if not _weather_params_usable(params):
+            raise ToolParamValidationError(
+                "weather: invalid city/units in planner or tool LLM output"
+            )
+
+        return await self._fetch_weather(params)
+
+    async def _fetch_weather(self, params: dict[str, Any]) -> dict[str, Any]:
         city = params.get("city", "London")
         cfg = load_config()
         tool_cfg = cfg["tools"]["weather"]
@@ -62,10 +137,10 @@ class WeatherAgent(BaseToolAgent):
     ) -> dict[str, Any]:
         """Call WeatherAPI.com with API key."""
         url = "https://api.weatherapi.com/v1/current.json"
-        params = {"key": api_key, "q": city, "aqi": "no"}
+        req_params = {"key": api_key, "q": city, "aqi": "no"}
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                url, params=params, timeout=aiohttp.ClientTimeout(total=timeout)
+                url, params=req_params, timeout=aiohttp.ClientTimeout(total=timeout)
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
@@ -81,10 +156,10 @@ class WeatherAgent(BaseToolAgent):
     async def _call_wttr(self, city: str, timeout: int) -> dict[str, Any]:
         """Fallback: wttr.in free API (no key needed)."""
         url = f"https://wttr.in/{city}"
-        params = {"format": "j1"}
+        req_params = {"format": "j1"}
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                url, params=params, timeout=aiohttp.ClientTimeout(total=timeout)
+                url, params=req_params, timeout=aiohttp.ClientTimeout(total=timeout)
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json()

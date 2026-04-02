@@ -33,9 +33,7 @@ _TEST_CONFIG = {
         "max_waves": 10,
         "max_parallel_tools": 8,
         "tool_timeout_seconds": 15,
-        "max_tool_attempts": 2,
     },
-    "graph": {"max_retries": 3},
 }
 
 _CONFIG_PATCH_TARGETS = [

@@ -1,37 +1,98 @@
 """Base classes and registry for the tool system.
 
-ToolSpec       — declarative tool metadata
-BaseToolAgent  — LLM tools: planner params first, then LLM recovery on failure
-BaseFunctionTool — base for pure function tools
-AgentRegistry  — singleton registry with autodiscovery support
+ToolSpec          — declarative tool metadata
+ToolInvocation    — graph ``state`` + plan task row; tools read fields via properties
+BaseToolAgent     — ``run(state, plan_task)`` builds ``ToolInvocation``; each tool calls ``self.llm`` when params are missing
+BaseFunctionTool  — base for pure function tools
+AgentRegistry     — singleton registry with autodiscovery support
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
-from langchain_core.messages import HumanMessage, SystemMessage
-
-from agent.llm import build_llm, get_llm_semaphore
+from agent.llm import build_llm
 from agent.yaml_config import load_config
 
 logger = logging.getLogger(__name__)
 
 
-class ToolExtractionError(Exception):
-    """Raised when a tool LLM fails to produce valid JSON after inner parse retries."""
-
-
-def _strip_json_fence(text: str) -> str:
+def strip_json_fence(text: str) -> str:
+    """Strip optional markdown fences from model output (tools use when parsing JSON)."""
     t = text.strip()
     if t.startswith("```"):
         t = t.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
     return t
+
+
+class ToolParamValidationError(Exception):
+    """Raised when a tool cannot obtain valid structured params (tool-specific)."""
+
+
+class UserFacingToolError(Exception):
+    """Tool failure with a short, user-safe message (no stack traces, no internal IDs)."""
+
+
+@dataclass(frozen=True)
+class ToolInvocation:
+    """One tool run: graph ``state`` plus the current plan task row.
+
+    The executor passes the live state and the task dict; tools use properties instead of
+    unpacking ``user_msg``, ``sub_task``, ``prior_results``, ``planner_params``, ``context_summary``.
+    """
+
+    state: Mapping[str, Any]
+    plan_task: Mapping[str, Any]
+
+    @property
+    def user_msg(self) -> str:
+        return str(self.state.get("task", ""))
+
+    @property
+    def sub_task(self) -> str:
+        return str(self.plan_task.get("sub_task") or "")
+
+    @property
+    def prior_results(self) -> dict[str, Any]:
+        pr = self.state.get("results")
+        return dict(pr) if isinstance(pr, dict) else {}
+
+    @property
+    def context_summary(self) -> str:
+        return str(self.state.get("context_summary") or "")
+
+    @property
+    def planner_params(self) -> dict[str, Any]:
+        p = self.plan_task.get("params")
+        if p is None:
+            return {}
+        return dict(p) if isinstance(p, dict) else {}
+
+    @classmethod
+    def from_graph(
+        cls, state: Mapping[str, Any], plan_task: Mapping[str, Any]
+    ) -> ToolInvocation:
+        return cls(state=state, plan_task=plan_task)
+
+    @classmethod
+    def from_parts(
+        cls,*,task: str = "", sub_task: str = "",prior_results: dict[str, Any] | None = None,
+        planner_params: dict[str, Any] | None = None,context_summary: str = "",) -> ToolInvocation:
+        
+        """Minimal state + task row (tests and callers without a full graph)."""
+        st: dict[str, Any] = {
+            "task": task,
+            "results": dict(prior_results or {}),
+            "context_summary": context_summary,
+        }
+        pt: dict[str, Any] = {
+            "sub_task": sub_task,
+            "params": dict(planner_params) if planner_params is not None else {},
+        }
+        return cls(state=st, plan_task=pt)
 
 
 @dataclass
@@ -50,16 +111,8 @@ class ToolSpec:
 class BaseToolAgent:
     """Base class for LLM-backed tools.
 
-    Subclasses must:
-    - Set ``spec`` (ToolSpec with type="llm")
-    - Set ``SYSTEM`` (static system prompt string — module-level constant)
-    - Implement ``_tool_executer(params: dict) -> dict``
-
-    Execution model:
-    1. If the planner supplied non-empty ``params``, ``_tool_executer`` runs first (no tool LLM).
-    2. If that raises, or params were missing/empty, the tool LLM produces JSON args
-       (with optional error feedback from the failed call), then ``_tool_executer`` runs again.
-    3. Outer attempts are capped by ``executor.max_tool_attempts`` (default 2).
+    Subclasses implement ``_tool_executor``. Call ``self.llm.ainvoke`` **only** when planner
+    params are missing what the tool needs — one call, no retry loops (implement in the tool file).
     """
 
     spec: ToolSpec
@@ -68,123 +121,20 @@ class BaseToolAgent:
     def __init__(self) -> None:
         self.llm = build_llm(self.spec.name)
         cfg = load_config()
-        agent_cfg = cfg["agents"].get(self.spec.name, {})
-        self.max_retries: int = agent_cfg.get("max_retries", 3)
         self.timeout: int = cfg["executor"]["tool_timeout_seconds"]
-        self.max_tool_attempts: int = cfg["executor"].get("max_tool_attempts", 2)
 
     async def run(
         self,
-        user_msg: str,
-        sub_task: str,
-        prior_results: dict[str, Any],
-        planner_params: dict[str, Any] | None = None,
-        context_summary: str = "",
+        state: Mapping[str, Any],
+        plan_task: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Run ``_tool_executer`` using planner args when present; on failure, use tool LLM to recover."""
-        params: dict[str, Any] | None = (
-            dict(planner_params) if planner_params else None
-        )
-        last_exc: BaseException | None = None
-
-        for attempt in range(self.max_tool_attempts):
-            try:
-                need_llm = (not params) or (last_exc is not None)
-                if need_llm:
-                    params = await self._llm_extract_params(
-                        user_msg=user_msg,
-                        sub_task=sub_task,
-                        prior_results=prior_results,
-                        context_summary=context_summary,
-                        cause=last_exc,
-                        previous_params=params,
-                    )
-                assert params is not None
-                return await self._tool_executer(params)
-            except Exception as e:
-                last_exc = e
-                logger.warning(
-                    "%s: attempt %d/%d failed: %s",
-                    self.spec.name,
-                    attempt + 1,
-                    self.max_tool_attempts,
-                    e,
-                )
-                if attempt + 1 >= self.max_tool_attempts:
-                    raise
-
-        raise RuntimeError(f"{self.spec.name}: exhausted attempts (unreachable)")
-
-    async def _llm_extract_params(
-        self,
-        user_msg: str,
-        sub_task: str,
-        prior_results: dict[str, Any],
-        context_summary: str,
-        cause: BaseException | None,
-        previous_params: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        """Invoke the tool LLM; retry on JSON parse errors only (up to ``max_retries``)."""
-        parse_feedback = ""
-        for parse_attempt in range(self.max_retries):
-            parts = [
-                f"User request: {user_msg}",
-                f"Conversation context (summary): {context_summary or '(none)'}",
-                f"Sub-task from plan: {sub_task}",
-                f"Prior tool results: {json.dumps(prior_results, default=str)}",
-            ]
-            if cause is not None:
-                parts.append(f"Previous execution failed with: {cause!s}")
-            if previous_params is not None:
-                parts.append(
-                    "Previous parameters attempted: "
-                    f"{json.dumps(previous_params, default=str)}"
-                )
-            if parse_feedback:
-                parts.append(
-                    f"Your previous reply was not valid JSON: {parse_feedback}. "
-                    "Reply with a single JSON object only — no markdown fences."
-                )
-            else:
-                parts.append(
-                    "Reply with a single JSON object only — no markdown, no fences, "
-                    "no explanation outside the JSON."
-                )
-            human_content = "\n".join(parts)
-
-            async with get_llm_semaphore():
-                params_msg = await asyncio.wait_for(
-                    self.llm.ainvoke([
-                        SystemMessage(content=self.SYSTEM),
-                        HumanMessage(content=human_content),
-                    ]),
-                    timeout=self.timeout,
-                )
-
-            raw = _strip_json_fence(params_msg.content)
-            try:
-                parsed = json.loads(raw)
-                if not isinstance(parsed, dict):
-                    raise ValueError("JSON root must be an object")
-                return parsed
-            except (json.JSONDecodeError, ValueError, TypeError) as exc:
-                parse_feedback = str(exc)
-                logger.warning(
-                    "%s: JSON parse failed (inner %d/%d): %s",
-                    self.spec.name,
-                    parse_attempt + 1,
-                    self.max_retries,
-                    parse_feedback,
-                )
-
-        raise ToolExtractionError(
-            f"{self.spec.name}: tool LLM did not return valid JSON after "
-            f"{self.max_retries} parse attempts"
-        )
+        """Build ``ToolInvocation`` from graph state + plan row; delegate to ``_tool_executor``."""
+        inv = ToolInvocation.from_graph(state, plan_task)
+        return await self._tool_executor(inv)
 
     @abstractmethod
-    async def _tool_executer(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Execute the backend (API call, eval, conversion, etc.) with structured params."""
+    async def _tool_executor(self, inv: ToolInvocation) -> dict[str, Any]:
+        """Tool-specific: backend; call ``self.llm`` once only if params from the planner are missing."""
         ...
 
 

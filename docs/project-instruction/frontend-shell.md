@@ -13,8 +13,8 @@ See [`chat-ui/.env.example`](../../chat-ui/.env.example).
 
 ## API contract
 
-- **`POST {base}/api/v1/task`** — JSON body `{ "task": "..." }`. Response: `task_id`, `final_answer`, `trace`.
-- The UI maps `final_answer` to the assistant bubble and `trace` to the trace panel.
+- **`POST {base}/api/v1/task`** — JSON body `{ "task": "..." }`. Response: `task_id`, `final_answer`, `latency_ms`, `total_input_tokens`, `total_output_tokens` (no full trace blob).
+- The UI maps `final_answer` to the assistant bubble; the collapsible observability strip shows latency, token totals, and `task_id`. Full persisted trace: **`GET {base}/api/v1/tasks/{task_id}`** (`observability` field).
 
 ## CORS
 

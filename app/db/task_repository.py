@@ -5,6 +5,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
+from typing import Any
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +40,10 @@ class TaskRepository:
         final_answer: str,
         trace: list[dict],
         *,
+        latency_ms: int | None = None,
+        total_input_tokens: int | None = None,
+        total_output_tokens: int | None = None,
+        observability_json: dict[str, Any] | None = None,
         status: TaskStatus = TaskStatus.completed,
     ) -> None:
         task = await self.get_by_id(task_id)
@@ -46,6 +52,10 @@ class TaskRepository:
         task.status = status
         task.final_answer = final_answer
         task.trace_json = trace
+        task.latency_ms = latency_ms
+        task.total_input_tokens = total_input_tokens
+        task.total_output_tokens = total_output_tokens
+        task.observability_json = observability_json
         task.completed_at = _utcnow()
         task.error_message = None
         await self._session.flush()

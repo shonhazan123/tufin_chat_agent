@@ -2,18 +2,18 @@
 
 ## Adding a New Tool
 
-Adding a tool requires exactly **one new file** + **one config block**. No other files change.
+Adding a tool requires exactly **one new file** + **one config block**. Other project files usually stay unchanged unless you add cross-cutting behavior (e.g. shared error types in `agent/tools/base.py`).
 
-### Step 1: Create the Tool File
+### Step 1: Create The Tool File
 
 Create `agent/tools/your_tool.py`. The autodiscovery loop in `agent/tools/__init__.py` imports all `.py` files in the directory (excluding `__init__.py` and `base.py`).
 
 ### Step 2: Choose Tool Type
 
-**LLM Tool** (`type: "llm"`) — for tools that need natural language understanding to extract API parameters:
+**LLM Tool** (`type: "llm"`) — tools that may call `self.llm.ainvoke` **once** when planner params are missing what they need (no retry loops in `BaseToolAgent`):
 
 ```python
-from agent.tools.base import ToolSpec, BaseToolAgent, registry
+from agent.tools.base import BaseToolAgent, ToolInvocation, ToolSpec, registry
 
 SPEC = ToolSpec(
     name="your_tool",
@@ -28,11 +28,16 @@ YOUR_TOOL_SYSTEM = SPEC.system_prompt  # static constant
 
 @registry.register(SPEC)
 class YourToolAgent(BaseToolAgent):
-    async def _tool_executer(self, params: dict) -> dict:
-        # params extracted by the LLM from the user's sub_task
-        result = await call_your_api(**params)
-        return {"field_a": result["val"], "field_b": result["label"]}
+    SYSTEM = YOUR_TOOL_SYSTEM
+
+    async def _tool_executor(self, inv: ToolInvocation) -> dict:
+        # inv.user_msg, inv.sub_task, inv.prior_results, inv.context_summary, inv.planner_params
+        # If planner params lack required fields: get_llm_semaphore(); asyncio.wait_for(self.llm.ainvoke(...)); json.loads once.
+        # Then call your API and return a dict matching output_schema.
+        ...
 ```
+
+`BaseToolAgent.run(state, plan_task)` wraps the graph state and current plan row in `ToolInvocation` and calls `_tool_executor` once. Do **not** add parse-retry loops in `base.py`; keep tool LLM usage to filling missing params only. Tests can use `ToolInvocation.from_parts(...)`.
 
 **Function Tool** (`type: "function"`) — for pure computation with no LLM needed:
 
@@ -79,12 +84,12 @@ cache:
     your_tool: 60
 ```
 
-### Files That Never Change When Adding a Tool
+### Files that usually stay unchanged when adding a tool
 
 - `graph.py` — graph structure is tool-agnostic
-- `graph_nodes.py` — executor uses registry lookup
+- `graph_nodes.py` — executor uses registry lookup (shared behavior such as `UserFacingToolError` lives here)
 - `main.py` — API layer is tool-agnostic
-- `base.py` — base classes and registry
+- `base.py` — base classes and registry (unless you extend shared helpers)
 - `__init__.py` — autodiscovery is automatic
 - Any existing tool file
 
@@ -95,3 +100,16 @@ cache:
 - The tool's `name` must match the key used under `tools:` in `config/shared.yaml` and `agents:` in each provider YAML
 - All HTTP calls must use `aiohttp`, never `requests`
 - CPU-bound work should use `ThreadPoolExecutor`
+
+### Calculator tool (`agent/tools/calculator.py`)
+
+- Expressions are evaluated via a whitelisted Python AST (not arbitrary `eval`).
+- **Powers:** `**` is the native form; a caret `^` is normalized to `**` before parsing (school-style notation). Bitwise XOR is not supported.
+- **Functions:** include `sqrt`, `cbrt` (real cube root, including negative inputs), `abs`, `round`, `sin`, `cos`, `tan`, `log`, `log10`, `ceil`, `floor`, plus constants `pi` and `e`.
+- The tool `ToolSpec.system_prompt` and `input_schema` describe this dialect to the planner and to the tool’s own param-fill LLM.
+
+### User-facing tool errors (`UserFacingToolError`)
+
+- Tools may raise `UserFacingToolError` from `agent.tools.base` with a short, user-safe message (no stack traces).
+- The executor tags trace entries with `user_facing: true` and aggregates `user_facing_error` on graph state so the responder can explain the failure in plain language instead of a generic apology.
+- Prefer this for failures the user can act on (e.g. unsupported function in an expression).

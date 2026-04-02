@@ -34,14 +34,12 @@ User Request
             tasks_remain   error    all_done
                  │          │          │
                  ▼          ▼          ▼
-            (loop back)  Retry?   Response Node
-                        ┌──┴──┐       │
-                      yes     no      ▼
-                        │      │   Synthesize answer
-                        ▼      ▼   from tool results
-                    Re-plan  Failure
-                    (back to  response
-                     planner)
+            (loop back)  Failure   Response Node
+                        response    (synthesize from
+                        (polite     tool results)
+                         apology;
+                         errors
+                         logged)
 ```
 
 ## Component Responsibilities
@@ -84,32 +82,37 @@ User Request
 |-------|------|----------|
 | `task` | `str` | Set once at graph entry |
 | `context_summary` | `str` | Conversation context snapshot |
-| `plan` | `list[dict]` | Set by planner; replaced on retry |
+| `plan` | `list[dict]` | Set by planner |
 | `results` | `dict` | **Merge reducer** — grows each executor wave |
 | `trace` | `list[dict]` | **Append reducer** — grows each executor wave |
 | `response` | `str` | Set once by response node |
-| `retry_count` | `int` | **Additive reducer** — incremented on each error |
-| `error_context` | `str` | Latest error message; cleared on success |
-| `failure_flag` | `bool` | True when max retries exhausted |
+| `error_context` | `str` | Latest error summary (for logs); cleared on success |
+| `failure_flag` | `bool` | True when execution failed and the graph uses the failure response path |
 
 ### `agent/prompts.py` — System Prompts
 
-**What it does:** Defines the fixed system prompts used as `SystemMessage` content:
+**What it does:** Defines the fixed system prompts used as `SystemMessage` content. Each prompt uses Markdown-style **section headings** (Role, Objective or output contract, rules, format) so model behavior and human review stay aligned.
 
 - **Planner prompt** — Built lazily from the tool registry. Tells the planner LLM what tools exist, each tool’s input/output field names, and that every task must include structured `params` matching those schemas (plus `sub_task` for LLM-typed tools). The executor tries planner `params` before invoking each tool’s specialist LLM.
-- **Responder prompt** — Instructions for synthesizing tool results into a natural language answer.
-- **Summarizer prompt** — Instructions for compressing conversation history into 2-3 sentences.
+- **Responder prompt** — Instructions for synthesizing tool results into a natural language answer (grounding, no double computation when tools already returned a final value, failure tone).
+- **Summarizer prompt** — Strict JSON output: rolling `summary` plus merged `user_key_facts` (stable user attributes). Background refresh after each assistant reply.
+
+LLM-backed tools use the same section pattern inside each `ToolSpec.system_prompt` (parameter specialist → JSON shape → rules).
 
 ### `agent/context.py` — Conversation Memory
 
-**What it does:** Maintains a process-lifetime rolling window of the last 5 user and 5 assistant messages. Provides a `summary` string (refreshed after each response via fire-and-forget LLM call) that the planner uses for context awareness across turns.
+**What it does:** Rolling window of the last 5 user and 5 assistant messages (tagged). Persists `summary` and `user_key_facts`. Snapshots are passed in graph state; **injection differs by node**: planner gets recent + summary (capped); tools get only rolling summary with `user_msg`; responder gets key facts + summary + current user message (capped).
+
+### `agent/memory_format.py` — Memory bundle
+
+**What it does:** `build_planner_context_block` (recent + summary) and `build_responder_memory_block` (key facts + summary), each with its own token budget.
 
 ### `agent/graph_nodes.py` — Graph Node Functions
 
 The three core node functions plus routing logic:
 
 **`planner_node`** — The "brain" of the agent.
-- Receives the task + conversation context + error context (if retrying)
+- Receives the task + planner memory (recent messages + `context_summary` only; capped)
 - Calls the planner LLM with the system prompt containing all available tools
 - Parses the JSON plan (with markdown fence stripping and error recovery)
 - Returns the task list for the executor
@@ -117,13 +120,13 @@ The three core node functions plus routing logic:
 **`executor_node`** — The "hands" of the agent.
 - Identifies ready tasks (all dependencies satisfied)
 - Runs them in parallel via `asyncio.gather` with a concurrency cap
-- For **LLM tools**: calls `agent.run(user_msg, sub_task, prior_results, planner_params=task["params"], context_summary=...)`
+- For **LLM tools**: calls `agent.run(state=state, plan_task=task)` (tools receive a **`ToolInvocation`** with `user_msg`, `sub_task`, `prior_results`, `planner_params`, `context_summary` derived from state + task)
 - For **function tools**: calls `agent.call(task["params"])`
 - Collects results, trace entries, and any errors
 - Wraps every call in `asyncio.wait_for(timeout=...)` for safety
 
 **`route_after_executor`** — The "decision maker" after each execution wave.
-- Checks for errors → routes to retry (re-plan) or failure
+- Checks for errors → routes to failure (no planner re-run; tools already performed their own retries)
 - Checks for remaining tasks → loops back to executor
 - All tasks done → routes to response node
 
@@ -131,8 +134,8 @@ The three core node functions plus routing logic:
 
 **`response_node`** — The "voice" of the agent.
 - Takes all accumulated results and the execution trace
-- Calls the responder LLM to synthesize a clear answer
-- On failure: generates a polite apology with the error details
+- Calls the responder LLM to synthesize a clear answer (see `RESPONDER_SYSTEM` in `agent/prompts.py`). When tools already returned a final value (e.g. calculator `result`), the responder must state it in the user's language without redoing step-by-step work unless the user asked for a derivation.
+- On failure: logs internal error details, then asks the responder for a user-safe apology (no technical leakage), or a plain-language explanation when `user_facing_error` is set
 
 ### `agent/graph.py` — LangGraph Compilation
 
@@ -141,7 +144,6 @@ The three core node functions plus routing logic:
 ```
 START → planner → executor → [route_after_executor]
                                   ├── "continue" → executor (next wave)
-                                  ├── "retry"    → planner (re-plan)
                                   ├── "fail"     → mark_failure → responder
                                   └── "done"     → responder → END
 ```
@@ -151,7 +153,8 @@ START → planner → executor → [route_after_executor]
 **What it does:** Provides the base classes and registry for all tools:
 
 - **`ToolSpec`** — Declarative metadata (name, type, purpose, schemas, TTL)
-- **`BaseToolAgent`** — LLM tools: try planner `params` first (`_tool_executer`); on failure or missing args, tool LLM (semaphore during LLM only) produces JSON, then `_tool_executer` again; outer attempts capped by `executor.max_tool_attempts` (default 2); inner JSON-parse retries use per-agent `max_retries`
+- **`ToolInvocation`** — frozen bundle: graph `state` + plan task row; properties for `user_msg`, `sub_task`, `prior_results`, `planner_params`, `context_summary`
+- **`BaseToolAgent`** — `run(state, plan_task)` builds **`ToolInvocation`** and delegates to **`_tool_executor(inv)`**; each tool invokes **`self.llm`** only when planner params are **missing** (no retry loops in `base.py`)
 - **`BaseFunctionTool`** — Pure functions: planner provides structured params directly
 - **`AgentRegistry`** — Singleton registry populated by `@register` decorators at import time
 
@@ -173,16 +176,14 @@ START → planner → executor → [route_after_executor]
 planner sets sub_task + params (structured JSON per tool input_schema)
     │
     ▼
-executor calls agent.run(..., planner_params, context_summary)
+executor calls agent.run(state, plan_task)
     │
-    ├── If params present: _tool_executer(params) first (no tool LLM)
-    │       └── on success → done
-    │       └── on exception → if attempts remain, tool LLM runs with user request,
-    │           conversation summary, sub-task, prior results, error, previous params
-    ├── If params missing/empty: tool LLM produces JSON first
-    ├── Acquire LLM semaphore only around the tool LLM call
+    ▼
+subclass _tool_executor(inv) — tool-specific: optional single self.llm.ainvoke if params missing,
+    then backend
+    │
+    ├── Acquire LLM semaphore around that tool LLM call
     └── Backend: HTTP API, safe eval, or conversion (+ currency API when needed)
-    Loop until success or executor.max_tool_attempts (default 2 full cycles)
 ```
 
 ### Function Tools (optional — `BaseFunctionTool`)
@@ -198,10 +199,7 @@ executor calls agent.call(params)
 
 ## Error Recovery Flow
 
-1. A tool fails during execution
-2. `executor_node` sets `error_context` with the error details and increments `retry_count`
-3. `route_after_executor` checks if retries remain:
-   - **Yes** → routes back to `planner_node` with the error context
-   - **No** → routes to `mark_failure_node` → `response_node` (failure message)
-4. On retry, the planner sees the error and generates a revised plan
-5. The new plan replaces the old one; the executor runs the new tasks
+1. An LLM-backed tool raises: `executor_node` records the error; no automatic replan. Tools do not run parse-retry loops in `base.py`.
+2. If the tool still raises, `executor_node` records the failure in `trace`, sets `error_context` for **logging**, and does not merge a result for that task id. If the exception is `UserFacingToolError`, the trace entry includes `user_facing: true` and the message is aggregated into `user_facing_error` on state.
+3. `route_after_executor` sees `error_context` → routes to `mark_failure_node` → `response_node` (no return to the planner).
+4. `response_node` logs the internal error text. If `user_facing_error` is set, the responder is instructed to explain that plain-language reason to the user; otherwise it asks for a generic polite apology without technical details.

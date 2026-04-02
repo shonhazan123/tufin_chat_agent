@@ -42,9 +42,16 @@ def test_health_ok(client: TestClient) -> None:
     assert data["redis"] == "skipped"
 
 
-def test_post_task_returns_task_id(client: TestClient) -> None:
+def test_post_task_returns_task_id_and_metrics(client: TestClient) -> None:
     async def fake_run(_task: str) -> AgentRunResult:
-        return AgentRunResult(final_answer="hello", trace=[{"type": "demo"}])
+        return AgentRunResult(
+            final_answer="hello",
+            trace=[],
+            observability={"version": 1, "executor_trace": []},
+            latency_ms=12,
+            total_input_tokens=3,
+            total_output_tokens=4,
+        )
 
     with patch("app.services.task_service.run_agent_task", fake_run):
         r = client.post("/api/v1/task", json={"task": "ping"})
@@ -52,12 +59,24 @@ def test_post_task_returns_task_id(client: TestClient) -> None:
     data = r.json()
     assert "task_id" in data
     assert data["final_answer"] == "hello"
-    assert data["trace"] == [{"type": "demo"}]
+    assert "trace" not in data
+    assert data["latency_ms"] == 12
+    assert data["total_input_tokens"] == 3
+    assert data["total_output_tokens"] == 4
 
 
 def test_get_task_roundtrip(client: TestClient) -> None:
+    obs = {"version": 1, "executor_trace": [{"task_id": "x"}]}
+
     async def fake_run(_task: str) -> AgentRunResult:
-        return AgentRunResult(final_answer="round", trace=[])
+        return AgentRunResult(
+            final_answer="round",
+            trace=[{"task_id": "x"}],
+            observability=obs,
+            latency_ms=99,
+            total_input_tokens=1,
+            total_output_tokens=2,
+        )
 
     with patch("app.services.task_service.run_agent_task", fake_run):
         post = client.post("/api/v1/task", json={"task": "x"})
@@ -65,7 +84,10 @@ def test_get_task_roundtrip(client: TestClient) -> None:
     tid = post.json()["task_id"]
     get = client.get(f"/api/v1/tasks/{tid}")
     assert get.status_code == 200
-    assert get.json()["final_answer"] == "round"
+    body = get.json()
+    assert body["final_answer"] == "round"
+    assert body["observability"] == obs
+    assert body["latency_ms"] == 99
 
 
 def test_get_task_404(client: TestClient) -> None:

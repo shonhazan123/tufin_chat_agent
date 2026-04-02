@@ -8,26 +8,24 @@ This project implements a multi-tool agent using a **two-tier plan-and-execute**
 
 ### Tier 1 — Planner LLM (Routing Intelligence)
 
-The planner receives the current user task plus a conversation context summary. It outputs a JSON execution plan declaring (or an empty `tasks` array when a reply needs no tools — e.g. greetings or pure chat):
+The planner receives the current user task plus a conversation context summary. It outputs a JSON execution plan declaring (or an empty `tasks` array when a reply needs no tools, or when **required user details are missing** and the assistant should ask a follow-up):
 - Which tools to call
 - For every tool: structured `params` whose keys match that tool’s input schema in the registry
 - For LLM-typed tools: a short natural language `sub_task` in addition to `params`
 - Dependency ordering via `depends_on` arrays
 
-The responder (see `RESPONDER_SYSTEM` in `agent/prompts.py`) acts as a personal assistant: it answers naturally when no tools ran, and synthesizes tool outputs into a friendly reply when they did.
+The responder (see `RESPONDER_SYSTEM` in `agent/prompts.py`) acts as a personal assistant: it answers naturally when no tools ran, and synthesizes tool outputs into a friendly reply when they did. When the planner returned an empty plan due to missing details, the responder should ask a targeted clarifying question rather than guessing. It must not repeat the same computation or long arithmetic walkthrough when a tool already produced the final answer (unless the user asked for steps).
 
-The planner knows: tool names, purposes, output field names, tool types (`llm` vs `function`), and each tool’s required `params` keys (see registry / planner prompt). Each tool’s system prompt defines how the tool LLM recovers when planner args are wrong or execution fails.
+The planner knows: tool names, purposes, output field names, tool types (`llm` vs `function`), and each tool’s input fields (see registry / planner prompt). Each LLM-typed tool calls its own `self.llm.ainvoke` **only when planner params are missing** what it needs — one shot, no retry loops in `BaseToolAgent`.
 
 ### Tier 2 — Tool Agents (Domain Specialists)
 
 Two subtypes:
 
 **LLM Tools** (`type: "llm"`) — weather, web_search, calculator, unit_converter:
-- Have their own LLM instance (model chosen per-agent in config)
-- Receive planner-supplied `params` first; call the backend without the tool LLM when possible
-- On missing/empty `params` or backend failure, the tool LLM infers or fixes JSON using the user request, conversation summary, sub-task, prior results, and error text (see each tool’s `system_prompt`)
-- Outer attempt limit: `executor.max_tool_attempts` (default 2); inner limit for malformed JSON from the tool LLM: per-agent `max_retries` in provider YAML
-- Hold the LLM semaphore only around the tool LLM call; release before HTTP/eval/conversion work
+- Have their own LLM instance (`build_llm` per tool name in `BaseToolAgent.__init__`)
+- `BaseToolAgent.run(state, plan_task)` builds **`ToolInvocation`** and calls **`_tool_executor(inv)`** once. Each tool calls **`self.llm.ainvoke`** only when params from the planner are **missing** (single call; no parse-retry loops in the base class)
+- Use `get_llm_semaphore()` around tool LLM calls; release before HTTP/eval/conversion work
 
 **Function Tools** (`type: "function"`) — optional pattern for tools with no extraction step:
 - Planner writes structured `params` directly into the plan
@@ -41,9 +39,7 @@ START → planner_node → executor_node ←────────────
                              ▼                           │
                        route_after_executor              │
                         ├── tasks_remain ───────────────►│ (loop)
-                        ├── error → retry_router         │
-                        │            ├── retry < max → planner_node
-                        │            └── retry >= max → response_node (failure)
+                        ├── error → mark_failure_node → response_node (failure; no re-plan)
                         └── all_done → response_node → END
 ```
 
@@ -62,7 +58,9 @@ Both Ollama and OpenAI use `ChatOpenAI` from `langchain-openai`. At **process st
 | `agent/tool_cache.py` | Tool TTL cache + LangChain SQLiteCache |
 | `agent/state.py` | AgentState TypedDict with merge/append/add reducers |
 | `agent/prompts.py` | Planner, responder, summarizer system prompts |
-| `agent/context.py` | Conversation context singleton: tagged `[user msg]` / `[assistant msg]` window; LLM dialogue summary only (no tool-execution narrative); refreshed in the background after each assistant reply |
+| `agent/context.py` | Conversation singleton: tagged window, `summary`, `user_key_facts`; background JSON summarizer after each reply |
+| `agent/memory_format.py` | `build_planner_context_block` (recent + summary); `build_responder_memory_block` (key facts + summary); separate token caps |
+| `agent/usage.py` | Per-invocation LLM token totals (`record_llm_message`); planner, responder, and tool LLM calls |
 | `agent/graph_nodes.py` | planner_node, executor_node, response_node, routing |
 | `agent/graph.py` | LangGraph StateGraph compilation with conditional edges |
 | `agent/startup.py` | Ordered initialization sequence + validation |
@@ -71,16 +69,16 @@ Both Ollama and OpenAI use `ChatOpenAI` from `langchain-openai`. At **process st
 | `app/settings.py` | Pydantic `Settings` for API, database, Redis, CORS (env-driven) |
 | `app/main.py` | FastAPI factory: `/api/v1` routes, CORS, lifespan (SQLite init, Redis, `agent.startup`) |
 | `app/services/task_service.py` | Orchestrates task rows, Redis response cache, and `app/integrations/agent_runner` |
-| `app/db/` | Async SQLAlchemy + SQLite persistence for tasks and traces (`task_repository.py`, models, `session.py` parses `DATABASE_URL` with `make_url` so parent dirs work for Docker and local SQLite paths) |
+| `app/db/` | Async SQLAlchemy + SQLite: tasks store executor `trace_json`, full `observability_json`, `latency_ms`, token totals (`task_repository.py`, models; `session.py` parses `DATABASE_URL` with `make_url` for Docker and local paths) |
 | `app/cache/redis_cache.py` | Redis GET/SET for cached final answers (TTL) |
-| `app/integrations/agent_runner.py` | Wraps `graph.ainvoke` + conversation context (same behavior as legacy `main.py`) |
+| `app/integrations/agent_runner.py` | Wraps timed `graph.ainvoke`, builds `observability_json`, resets usage accumulator; conversation context |
 | `main.py` | Re-exports `app` for `uvicorn main:app` |
 
 For a detailed walkthrough of the reasoning flow, see [agent-reasoning-flow.md](agent-reasoning-flow.md).
 
 ## Chat UI Shell
 
-The [`chat-ui/`](../../chat-ui/) SPA calls **`POST /api/v1/task`** on the API (configurable base URL via `VITE_API_BASE_URL`). See [frontend-shell.md](frontend-shell.md).
+The [`chat-ui/`](../../chat-ui/) SPA calls **`POST /api/v1/task`** (slim metrics + answer) and can load full traces via **`GET /api/v1/tasks/{task_id}`**. Base URL: `VITE_API_BASE_URL`. See [frontend-shell.md](frontend-shell.md).
 
 ## Docker
 

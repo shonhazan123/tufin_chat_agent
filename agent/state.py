@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import operator
 from typing import Annotated, Any
 
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 
 def _merge(existing: dict, new: dict) -> dict:
@@ -24,16 +23,17 @@ class AgentState(TypedDict):
     Reducer semantics:
     - results: merge (dict grows each executor wave)
     - trace: append (list grows each executor wave)
-    - retry_count: additive (node returns 1, reducer sums)
     - All other fields: last-write-wins (plain replacement)
     """
 
     task: str
     context_summary: str
+    user_key_facts: str
+    recent_messages_text: str
     plan: list[dict]
     results: Annotated[dict[str, Any], _merge]
     trace: Annotated[list[dict], _append]
     response: str
-    retry_count: Annotated[int, operator.add]
     error_context: str
+    user_facing_error: NotRequired[str]
     failure_flag: bool

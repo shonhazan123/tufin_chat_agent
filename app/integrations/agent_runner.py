@@ -4,21 +4,29 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
+from typing import Any
 
-from agent.yaml_config import load_config
 from agent.context import conversation_context
 from agent.graph import get_graph
 from agent.llm import build_llm
+from agent.usage import get_invocation_usage, reset_invocation_usage
+from agent.yaml_config import load_config
 
 logger = logging.getLogger(__name__)
-_RECURSION_LIMIT_PER_WAVE = 3  
+_RECURSION_LIMIT_PER_WAVE = 3
+
 
 @dataclass
 class AgentRunResult:
     final_answer: str
     trace: list[dict]
     failure_flag: bool = False
+    latency_ms: int = 0
+    total_input_tokens: int | None = None
+    total_output_tokens: int | None = None
+    observability: dict[str, Any] = field(default_factory=dict)
 
 
 def record_assistant_and_schedule_conversation_summary(final_answer: str) -> None:
@@ -31,33 +39,85 @@ def record_assistant_and_schedule_conversation_summary(final_answer: str) -> Non
     asyncio.create_task(conversation_context.summarize_async(build_llm("responder")))
 
 
+def _build_observability_json(
+    initial_state: dict[str, Any],
+    result_state: dict[str, Any],
+    usage: Any | None,
+) -> dict[str, Any]:
+    """Structured record for DB / GET — full graph context for debugging."""
+    u = usage
+    llm_calls: list[dict[str, Any]] = []
+    if u is not None:
+        llm_calls = list(u.llm_calls)
+    return {
+        "version": 1,
+        "context_at_start": {
+            "task": initial_state.get("task", ""),
+            "context_summary": initial_state.get("context_summary", ""),
+            "user_key_facts": initial_state.get("user_key_facts", ""),
+            "recent_messages_text": initial_state.get("recent_messages_text", ""),
+        },
+        "plan": result_state.get("plan") or [],
+        "results": result_state.get("results") or {},
+        "executor_trace": result_state.get("trace") or [],
+        "error_context": (result_state.get("error_context") or ""),
+        "user_facing_error": (result_state.get("user_facing_error") or ""),
+        "failure_flag": bool(result_state.get("failure_flag", False)),
+        "response": result_state.get("response", ""),
+        "llm_calls": llm_calls,
+        "totals": {
+            "input_tokens": u.total_input_tokens if u is not None else None,
+            "output_tokens": u.total_output_tokens if u is not None else None,
+        },
+    }
+
+
 async def run_agent_task(task: str) -> AgentRunResult:
     cfg = load_config()
     graph = get_graph()
 
+    reset_invocation_usage()
+
     conversation_context.add_user(task)
 
-    initial_state = {
+    initial_state: dict[str, Any] = {
         "task": task,
         "context_summary": conversation_context.summary,
+        "user_key_facts": conversation_context.user_key_facts,
+        "recent_messages_text": conversation_context.format_recent_messages(),
         "plan": [],
         "results": {},
         "trace": [],
         "response": "",
-        "retry_count": 0,
         "error_context": "",
+        "user_facing_error": "",
         "failure_flag": False,
     }
 
+    t0 = time.perf_counter()
     result = await graph.ainvoke(
         initial_state,
         config={"recursion_limit": cfg["executor"]["max_waves"] * _RECURSION_LIMIT_PER_WAVE},
     )
+    latency_ms = int((time.perf_counter() - t0) * 1000)
 
     answer = result.get("response", "I was unable to generate a response.")
     trace = result.get("trace", [])
     failure_flag = bool(result.get("failure_flag", False))
 
+    usage = get_invocation_usage()
+    obs = _build_observability_json(initial_state, result, usage)
+    inp = usage.total_input_tokens if usage is not None else None
+    out = usage.total_output_tokens if usage is not None else None
+
     record_assistant_and_schedule_conversation_summary(answer)
 
-    return AgentRunResult(final_answer=answer, trace=trace, failure_flag=failure_flag)
+    return AgentRunResult(
+        final_answer=answer,
+        trace=trace,
+        failure_flag=failure_flag,
+        latency_ms=latency_ms,
+        total_input_tokens=inp,
+        total_output_tokens=out,
+        observability=obs,
+    )

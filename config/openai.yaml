@@ -13,24 +13,24 @@ agents:
     model: gpt-4o-mini
     max_tokens: 1024
     temperature: 0.3
-    max_retries: 3
+    max_retries: 2
   weather:
     model: gpt-4o-mini
     max_tokens: 256
     temperature: 0
-    max_retries: 3
+    max_retries: 2
   web_search:
     model: gpt-4o-mini
     max_tokens: 512
     temperature: 0
-    max_retries: 3
+    max_retries: 2
   calculator:
     model: gpt-4o-mini
     max_tokens: 256
     temperature: 0
-    max_retries: 3
+    max_retries: 2
   unit_converter:
     model: gpt-4o-mini
     max_tokens: 256
     temperature: 0
-    max_retries: 3
+    max_retries: 2

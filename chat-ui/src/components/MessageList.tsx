@@ -36,13 +36,16 @@ export function MessageList({ messages }: Props) {
                 {m.status === 'pending' ? (
                   <ThinkingIndicator />
                 ) : m.status === 'error' ? (
-                  <p className="text-sm text-red-400">
-                    Something went wrong (placeholder).
-                  </p>
+                  <MarkdownBlock content={m.content} />
                 ) : (
                   <>
                     <MarkdownBlock content={m.content} />
-                    {m.trace !== undefined && <TracePanel trace={m.trace} />}
+                    <TracePanel
+                      taskId={m.taskId}
+                      latencyMs={m.latencyMs}
+                      totalInputTokens={m.totalInputTokens}
+                      totalOutputTokens={m.totalOutputTokens}
+                    />
                   </>
                 )}
               </div>

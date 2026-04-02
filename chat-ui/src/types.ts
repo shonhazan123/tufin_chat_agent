@@ -3,9 +3,12 @@ export type AssistantMessage = {
   role: 'assistant'
   content: string
   status: 'pending' | 'done' | 'error'
-  trace?: unknown
   /** Server task id when using POST /api/v1/task */
   taskId?: string
+  /** Graph invocation latency (ms) */
+  latencyMs?: number | null
+  totalInputTokens?: number | null
+  totalOutputTokens?: number | null
 }
 
 export type UserMessage = {

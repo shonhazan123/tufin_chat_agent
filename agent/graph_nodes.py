@@ -10,31 +10,33 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent.llm import build_llm
+from agent.usage import record_llm_message
+from agent.memory_format import (
+    PLANNER_MEMORY_MAX_TOKENS,
+    build_planner_context_block,
+    build_responder_memory_block,
+)
 from agent.prompts import RESPONDER_SYSTEM, build_planner_prompt
-from agent.tools.base import registry
+from agent.tools.base import UserFacingToolError, registry
 from agent.yaml_config import load_config
 
 logger = logging.getLogger(__name__)
 
 
 async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
-    """Invoke planner LLM to produce a JSON execution plan.
-
-    On retry, includes error_context so the planner can adjust its approach.
-    Always clears error_context after reading it.
-    """
+    """Invoke planner LLM to produce a JSON execution plan."""
     llm = build_llm("planner")
     system_prompt = build_planner_prompt()
     cfg = load_config()
 
     parts = [f"Task: {state['task']}"]
-    if state.get("context_summary"):
-        parts.append(f"[Conversation context]\n{state['context_summary']}")
-    if state.get("error_context"):
-        parts.append(
-            f"[Previous attempt failed]\n{state['error_context']}\n"
-            "Please create a revised plan that avoids the error above."
-        )
+    planner_mem = build_planner_context_block(
+        recent_messages=(state.get("recent_messages_text") or "").strip(),
+        context_summary=(state.get("context_summary") or "").strip(),
+        max_tokens=PLANNER_MEMORY_MAX_TOKENS,
+    ).strip()
+    if planner_mem:
+        parts.append(f"[Planner memory — last messages + summary; ~{PLANNER_MEMORY_MAX_TOKENS} token budget]\n{planner_mem}")
 
     result = await asyncio.wait_for(
         llm.ainvoke([
@@ -43,6 +45,7 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
         ]),
         timeout=cfg["executor"]["tool_timeout_seconds"],
     )
+    record_llm_message("planner", result)
 
     text = result.content.strip()
     if text.startswith("```"):
@@ -51,8 +54,9 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
     try:
         raw = json.loads(text)
     except json.JSONDecodeError as exc:
+        err = f"Planner JSON parse error: {exc}"
         logger.error("Planner returned invalid JSON: %s", exc)
-        return {"error_context": f"Planner JSON parse error: {exc}", "retry_count": 1}
+        return {"error_context": err}
 
     tasks = raw.get("tasks", raw) if isinstance(raw, dict) else raw
     logger.info("Planner produced %d task(s)", len(tasks))
@@ -63,7 +67,7 @@ async def executor_node(state: dict[str, Any]) -> dict[str, Any]:
     """Execute one wave of ready tasks via asyncio.gather.
 
     A task is "ready" when all its dependencies are already in results.
-    LLM tools: agent.run(..., planner_params=task['params'], context_summary=...).
+    LLM tools: agent.run(state=state, plan_task=task).
     Function tools (if any): agent.call(task['params']).
 
     If the planner produced no tasks (empty plan), there is nothing to run; return
@@ -98,13 +102,7 @@ async def executor_node(state: dict[str, Any]) -> dict[str, Any]:
             try:
                 if task["type"] == "llm":
                     res = await asyncio.wait_for(
-                        agent.run(
-                            user_msg=state["task"],
-                            sub_task=task.get("sub_task") or "",
-                            prior_results=results,
-                            planner_params=task.get("params"),
-                            context_summary=state.get("context_summary") or "",
-                        ),
+                        agent.run(state=state, plan_task=task),
                         timeout=timeout,
                     )
                 else:
@@ -115,8 +113,19 @@ async def executor_node(state: dict[str, Any]) -> dict[str, Any]:
                 trace = {"task_id": tid, "agent": task["agent"], "status": "ok", "result": res}
                 return tid, res, trace
             except Exception as exc:
-                logger.warning("Task %s (%s) failed: %s", tid, task["agent"], exc)
-                trace = {"task_id": tid, "agent": task["agent"], "status": "error", "error": str(exc)}
+                logger.exception(
+                    "Task %s (%s) failed after tool-level retries",
+                    tid,
+                    task["agent"],
+                )
+                ufe = isinstance(exc, UserFacingToolError)
+                trace = {
+                    "task_id": tid,
+                    "agent": task["agent"],
+                    "status": "error",
+                    "error": str(exc),
+                    "user_facing": ufe,
+                }
                 return tid, None, trace
 
     outcomes = await asyncio.gather(
@@ -126,6 +135,7 @@ async def executor_node(state: dict[str, Any]) -> dict[str, Any]:
     new_results: dict[str, Any] = {}
     new_trace: list[dict] = []
     errors: list[str] = []
+    user_facing_parts: list[str] = []
 
     for outcome in outcomes:
         if isinstance(outcome, BaseException):
@@ -136,14 +146,20 @@ async def executor_node(state: dict[str, Any]) -> dict[str, Any]:
         if res is not None:
             new_results[tid] = res
         else:
-            errors.append(trace_entry.get("error", f"Task {tid} failed"))
+            err_msg = trace_entry.get("error", f"Task {tid} failed")
+            errors.append(err_msg)
+            if trace_entry.get("user_facing"):
+                user_facing_parts.append(str(err_msg))
 
     update: dict[str, Any] = {"results": new_results, "trace": new_trace}
     if errors:
         update["error_context"] = "; ".join(errors)
-        update["retry_count"] = 1
     else:
         update["error_context"] = ""
+
+    update["user_facing_error"] = (
+        "; ".join(user_facing_parts) if user_facing_parts else ""
+    )
 
     return update
 
@@ -151,15 +167,14 @@ async def executor_node(state: dict[str, Any]) -> dict[str, Any]:
 def route_after_executor(state: dict[str, Any]) -> str:
     """Routing function for the conditional edge after executor_node.
 
-    Returns one of: "continue", "retry", "fail", "done".
+    Returns one of: "continue", "fail", "done". Tool LLM recovery (at most one
+    pass after execution failure) is inside each tool (BaseToolAgent); the graph
+    does not re-run the planner on errors.
 
     Empty plan (no tools) → "done" immediately so the graph reaches the responder
     without looping the executor.
     """
     if state.get("error_context"):
-        max_retries = load_config()["graph"]["max_retries"]
-        if state.get("retry_count", 0) < max_retries:
-            return "retry"
         return "fail"
 
     plan = state.get("plan") or []
@@ -182,23 +197,50 @@ async def mark_failure_node(state: dict[str, Any]) -> dict[str, Any]:
 async def response_node(state: dict[str, Any]) -> dict[str, Any]:
     """Invoke responder LLM to synthesize a natural language answer.
 
-    When failure_flag is set, produces a polite error message instead.
+    When failure_flag is set, logs internal error details and asks the responder
+    for a user-safe apology without exposing technical messages.
     """
     llm = build_llm("responder")
     cfg = load_config()
 
     if state.get("failure_flag"):
-        content = (
-            f"User message: {state['task']}\n\n"
-            f"The system could not complete this task after multiple retries.\n"
-            f"Last error: {state.get('error_context', 'Unknown')}\n\n"
-            "Generate a polite apology and suggest the user rephrase or try again."
+        internal = (state.get("error_context") or "").strip() or "Unknown failure"
+        logger.error(
+            "Execution failed (details not shown to user): %s",
+            internal,
         )
+        resp_mem = build_responder_memory_block(
+            user_key_facts=(state.get("user_key_facts") or "").strip(),
+            context_summary=(state.get("context_summary") or "").strip(),
+        ).strip()
+        mem_line = f"\n\n{resp_mem}" if resp_mem else ""
+        ufe = (state.get("user_facing_error") or "").strip()
+        if ufe:
+            content = (
+                f"User message: {state['task']}{mem_line}\n\n"
+                "The tools could not complete this request. The following plain-language "
+                "reason is safe to share with the user (rephrase it naturally; do not add "
+                "stack traces or internal IDs):\n"
+                f"{ufe}\n\n"
+                "Write a short, helpful reply that explains this in friendly terms and, "
+                "if relevant, what they could change. Do not quote raw error codes."
+            )
+        else:
+            content = (
+                f"User message: {state['task']}{mem_line}\n\n"
+                "The tools could not complete this request successfully (details are omitted here).\n\n"
+                "Write a short, polite message explaining we could not produce the answer they wanted. "
+                "Do not quote error codes, stack traces, or internal system messages. "
+                "Suggest they rephrase or try again later."
+            )
     else:
         parts = [f"User message: {state['task']}"]
-        ctx = (state.get("context_summary") or "").strip()
-        if ctx:
-            parts.append(f"[Conversation context]\n{ctx}")
+        resp_mem = build_responder_memory_block(
+            user_key_facts=(state.get("user_key_facts") or "").strip(),
+            context_summary=(state.get("context_summary") or "").strip(),
+        ).strip()
+        if resp_mem:
+            parts.append(resp_mem)
         parts.append(
             "Tool results (may be empty if the planner needed no tools):\n"
             f"{json.dumps(state.get('results') or {}, indent=2, default=str)}"
@@ -216,5 +258,6 @@ async def response_node(state: dict[str, Any]) -> dict[str, Any]:
         ]),
         timeout=cfg["executor"]["tool_timeout_seconds"],
     )
+    record_llm_message("responder", result)
 
     return {"response": result.content}

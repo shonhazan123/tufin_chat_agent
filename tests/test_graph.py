@@ -14,6 +14,25 @@ def _mock_llm_response(content: str) -> MagicMock:
     return msg
 
 
+def _graph_state(**kwargs):
+    """Minimal AgentState-shaped dict for graph node tests."""
+    defaults = {
+        "task": "",
+        "context_summary": "",
+        "user_key_facts": "",
+        "recent_messages_text": "",
+        "plan": [],
+        "results": {},
+        "trace": [],
+        "response": "",
+        "error_context": "",
+        "user_facing_error": "",
+        "failure_flag": False,
+    }
+    defaults.update(kwargs)
+    return defaults
+
+
 @pytest.fixture()
 def mock_llm_factory():
     """Patch build_llm to return controllable AsyncMock LLMs per agent name."""
@@ -64,17 +83,9 @@ async def test_calculator_basic_flow(mock_llm_factory):
 
     _ensure_calculator_mock()
 
-    state = {
-        "task": "What is 6 times 7?",
-        "context_summary": "",
-        "plan": [],
-        "results": {},
-        "trace": [],
-        "response": "",
-        "retry_count": 0,
-        "error_context": "",
-        "failure_flag": False,
-    }
+    state = _graph_state(
+        task="What is 6 times 7?",
+    )
 
     planner_out = await planner_node(state)
     assert len(planner_out["plan"]) == 1
@@ -115,7 +126,7 @@ async def test_parallel_tasks_in_plan(mock_llm_factory):
         },
     ]
 
-    state = {"task": "compute", "plan": plan, "results": {}, "trace": [], "retry_count": 0, "error_context": "", "failure_flag": False}
+    state = _graph_state(task="compute", plan=plan)
 
     _ensure_calculator_mock()
 
@@ -151,7 +162,7 @@ async def test_sequential_dependency(mock_llm_factory):
         },
     ]
 
-    state = {"task": "chain", "plan": plan, "results": {}, "trace": [], "retry_count": 0, "error_context": "", "failure_flag": False}
+    state = _graph_state(task="chain", plan=plan)
 
     _ensure_calculator_mock()
 
@@ -166,8 +177,8 @@ async def test_sequential_dependency(mock_llm_factory):
 
 
 @pytest.mark.asyncio
-async def test_error_sets_retry_context(mock_llm_factory):
-    """A failing tool should set error_context and retry_count."""
+async def test_error_routes_to_fail_not_planner(mock_llm_factory):
+    """A failing tool should set error_context; router goes to fail (no re-plan)."""
     from agent.graph_nodes import executor_node, route_after_executor
 
     plan = [
@@ -180,18 +191,17 @@ async def test_error_sets_retry_context(mock_llm_factory):
             "depends_on": [],
         }
     ]
-    state = {"task": "bad math", "plan": plan, "results": {}, "trace": [], "retry_count": 0, "error_context": "", "failure_flag": False}
+    state = _graph_state(task="bad math", plan=plan)
 
     calc_llm = _ensure_calculator_mock()
     calc_llm.ainvoke = AsyncMock(return_value=_mock_llm_response('{"expression": "1/0"}'))
 
     out = await executor_node(state)
     assert out["error_context"] != ""
-    assert out["retry_count"] == 1
 
     state.update(out)
     route = route_after_executor(state)
-    assert route == "retry"
+    assert route == "fail"
 
 
 @pytest.mark.asyncio
@@ -203,7 +213,6 @@ async def test_route_done_when_all_complete(mock_llm_factory):
         "plan": [{"id": "t1", "agent": "calculator", "type": "llm", "sub_task": "noop", "depends_on": []}],
         "results": {"t1": {"result": 1}},
         "error_context": "",
-        "retry_count": 0,
     }
     assert route_after_executor(state) == "done"
 
@@ -213,16 +222,7 @@ async def test_route_done_when_empty_plan(mock_llm_factory):
     """No planner tasks (e.g. greeting): executor adds nothing; route goes to responder."""
     from agent.graph_nodes import executor_node, route_after_executor
 
-    state = {
-        "task": "hi",
-        "context_summary": "",
-        "plan": [],
-        "results": {},
-        "trace": [],
-        "retry_count": 0,
-        "error_context": "",
-        "failure_flag": False,
-    }
+    state = _graph_state(task="hi")
     exec_out = await executor_node(state)
     assert exec_out == {}
     state.update(exec_out)
@@ -239,17 +239,12 @@ async def test_response_node_without_tools(mock_llm_factory):
         return_value=_mock_llm_response("Hello! How can I help you today?")
     )
 
-    state = {
-        "task": "hi",
-        "context_summary": "Earlier: user asked about the weather.",
-        "plan": [],
-        "results": {},
-        "trace": [],
-        "response": "",
-        "retry_count": 0,
-        "error_context": "",
-        "failure_flag": False,
-    }
+    summary = "Earlier: user asked about the weather."
+    state = _graph_state(
+        task="hi",
+        context_summary=summary,
+        user_key_facts="User prefers Celsius.",
+    )
 
     out = await response_node(state)
     assert "Hello" in out["response"]
@@ -257,15 +252,17 @@ async def test_response_node_without_tools(mock_llm_factory):
     messages = call[0][0]
     human = messages[1]
     assert "hi" in human.content
-    assert "Conversation context" in human.content
+    assert "Conversation summary" in human.content
+    assert "Earlier" in human.content
+    assert "User key facts" in human.content
 
 
 @pytest.mark.asyncio
-async def test_failure_flag_on_max_retries(mock_llm_factory):
-    """After max retries, route should return 'fail'."""
+async def test_failure_flag_on_executor_error(mock_llm_factory):
+    """Any executor error_context routes to fail and mark_failure sets failure_flag."""
     from agent.graph_nodes import mark_failure_node, route_after_executor
 
-    state = {"plan": [], "results": {}, "error_context": "boom", "retry_count": 3, "failure_flag": False}
+    state = {"plan": [], "results": {}, "error_context": "boom", "failure_flag": False}
     route = route_after_executor(state)
     assert route == "fail"
 

@@ -26,7 +26,7 @@ A **Multi-Tool Agent REST API** that accepts natural language tasks, plans and e
 
 ## Agent Tools
 Implement at least 3 as real functions (not mocks):
-- `calculator` — planner supplies `params.expression`; tool LLM only on missing/wrong args or eval failure (`executor.max_tool_attempts`)
+- `calculator` — planner supplies `params.expression`; tool calls `self.llm` only if expression is missing (`CalculatorAgent._tool_executor`; `agent/tools/base.py` has no `ainvoke`)
 - `weather` — fetch current weather for a city
 - `web_search` — search the web and return a summary
 - `unit_converter` — convert between length, weight, temperature, currency

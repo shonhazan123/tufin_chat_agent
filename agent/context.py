@@ -1,14 +1,14 @@
 """Conversation context manager — process-lifetime singleton.
 
-Maintains a rolling window of recent messages and an LLM-generated summary.
-Not part of AgentState — this is global, not per-request.
+Maintains a rolling window of recent messages, an LLM-generated summary, and durable
+``user_key_facts``. Not part of AgentState — this is global, not per-request.
 """
 
 from __future__ import annotations
 
-from collections import deque
-
+import json
 import logging
+from collections import deque
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
@@ -27,6 +27,7 @@ class ConversationContext:
         self._human: deque[HumanMessage] = deque(maxlen=5)
         self._ai: deque[AIMessage] = deque(maxlen=5)
         self.summary: str = ""
+        self.user_key_facts: str = ""
 
     def add_user(self, text: str) -> None:
         """Record a user message (tagged for downstream summarizers)."""
@@ -47,19 +48,55 @@ class ConversationContext:
                 msgs.append(a[i])
         return msgs
 
-    async def summarize_async(self, llm) -> None:
-        """Compress tagged user/assistant window into the persistent summary.
+    def format_recent_messages(self) -> str:
+        """Last up to five user/assistant turns as plain text (for planner/responder)."""
+        lines: list[str] = []
+        for m in self.window():
+            if isinstance(m, HumanMessage):
+                body = (m.content or "").replace(USER_MSG_PREFIX, "", 1)
+                lines.append(f"user: {body.strip()}")
+            else:
+                body = (m.content or "").replace(ASSISTANT_MSG_PREFIX, "", 1)
+                lines.append(f"assistant: {body.strip()}")
+        return "\n".join(lines).strip()
 
-        Failures are swallowed — we keep the old summary rather than raise.
-        """
+    async def summarize_async(self, llm) -> None:
+        """Update rolling ``summary`` and ``user_key_facts`` from the tagged window (JSON output)."""
         try:
+            prior = (self.user_key_facts or "").strip()
+            prior_block = (
+                f"Prior user_key_facts (merge, correct, dedupe; may be empty):\n{prior or '(none)'}"
+            )
             result = await llm.ainvoke([
                 SystemMessage(content=SUMMARIZER_SYSTEM),
+                HumanMessage(content=prior_block),
                 *self.window(),
             ])
-            self.summary = (result.content or "").strip()
+            raw = (result.content or "").strip()
+            summary, facts = _parse_summarizer_json(raw)
+            if summary:
+                self.summary = summary
+            if facts is not None:
+                self.user_key_facts = facts
         except Exception:
-            logger.debug("Summarization failed, keeping previous summary", exc_info=True)
+            logger.debug("Summarization failed, keeping previous summary and key facts", exc_info=True)
+
+
+def _parse_summarizer_json(content: str) -> tuple[str, str | None]:
+    """Return (summary, user_key_facts). ``facts`` is None if JSON could not be parsed for facts."""
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            s = (data.get("summary") or "").strip()
+            f = (data.get("user_key_facts") or "").strip()
+            return s, f
+    except json.JSONDecodeError:
+        pass
+    # Fallback: treat whole blob as summary only
+    return text, None
 
 
 conversation_context = ConversationContext()

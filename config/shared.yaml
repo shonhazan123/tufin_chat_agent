@@ -36,8 +36,3 @@ executor:
   max_waves: 10
   max_parallel_tools: 8
   tool_timeout_seconds: 15
-  # Per tool task: try planner-supplied params first; on failure, tool LLM may recover (each cycle = planner args or one LLM extraction + _tool_executer).
-  max_tool_attempts: 2
-
-graph:
-  max_retries: 3

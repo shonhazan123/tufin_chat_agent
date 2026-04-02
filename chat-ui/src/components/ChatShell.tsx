@@ -55,7 +55,9 @@ export function ChatShell() {
         const data = (await res.json()) as {
           task_id?: string
           final_answer?: string
-          trace?: unknown
+          latency_ms?: number | null
+          total_input_tokens?: number | null
+          total_output_tokens?: number | null
           error?: { message?: string }
         }
         if (!res.ok) {
@@ -67,7 +69,6 @@ export function ChatShell() {
           throw new Error(msg || `HTTP ${res.status}`)
         }
         const body = data.final_answer ?? ''
-        const trace = data.trace
         const taskId = data.task_id
         setMessages((m) =>
           m.map((msg) =>
@@ -76,8 +77,10 @@ export function ChatShell() {
                   ...msg,
                   content: body,
                   status: 'done' as const,
-                  trace,
                   taskId,
+                  latencyMs: data.latency_ms,
+                  totalInputTokens: data.total_input_tokens,
+                  totalOutputTokens: data.total_output_tokens,
                 }
               : msg,
           ),
