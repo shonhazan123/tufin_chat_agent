@@ -39,10 +39,10 @@ _TEST_CONFIG = {
 }
 
 _CONFIG_PATCH_TARGETS = [
-    "agent.yaml_config.load_config",
-    "agent.llm.load_config",
-    "agent.tool_cache.load_config",
-    "agent.tools.base.load_config",
+    "agent.config_loader.load_config",
+    "agent.llm_provider_factory.load_config",
+    "agent.tool_result_cache.load_config",
+    "agent.tools.tool_base_classes.load_config",
     "agent.tools.weather.load_config",
     "agent.tools.web_search.load_config",
     "agent.tools.unit_converter.load_config",
@@ -60,7 +60,7 @@ def test_config():
 
 def pytest_configure(config):
     """Populate the tool registry and LLM semaphore before tests (matches production startup)."""
-    from agent.llm import init_llm_semaphore
+    from agent.llm_provider_factory import init_llm_semaphore
     from agent.tools import discover_tools
 
     discover_tools()

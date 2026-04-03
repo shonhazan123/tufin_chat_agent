@@ -8,11 +8,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent.context import conversation_context
+from agent.config_loader import load_config
+from agent.conversation_memory import conversation_context
 from agent.graph import get_graph
-from agent.llm import build_llm
-from agent.tokens import get_usage, reset_usage
-from agent.yaml_config import load_config
+from agent.llm_provider_factory import build_llm
+from agent.token_usage_tracker import get_usage, reset_usage
 
 logger = logging.getLogger(__name__)
 _RECURSION_LIMIT_PER_WAVE = 3
@@ -96,11 +96,22 @@ async def run_agent_task(task: str) -> AgentRunResult:
 
     conversation_context.add_user(task)
 
+    ctx_summary = conversation_context.summary
+    ctx_key_facts = conversation_context.user_key_facts
+    ctx_recent = conversation_context.format_recent_messages()
+
+    logger.info(
+        "Graph input context — summary: %r, key_facts: %r, recent_len: %d chars",
+        ctx_summary[:150] if ctx_summary else "(none)",
+        ctx_key_facts[:150] if ctx_key_facts else "(none)",
+        len(ctx_recent),
+    )
+
     initial_state: dict[str, Any] = {
         "task": task,
-        "context_summary": conversation_context.summary,
-        "user_key_facts": conversation_context.user_key_facts,
-        "recent_messages_text": conversation_context.format_recent_messages(),
+        "context_summary": ctx_summary,
+        "user_key_facts": ctx_key_facts,
+        "recent_messages_text": ctx_recent,
         "plan": [],
         "results": {},
         "trace": [],

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.tools.base import ToolInvocation
+from agent.types import ToolInvocation
 from agent.tools.unit_converter import UnitConverterAgent
 
 

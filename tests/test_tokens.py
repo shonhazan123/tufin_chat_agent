@@ -1,4 +1,4 @@
-"""Tests for agent.tokens — tiktoken counting + 3-way usage tracking."""
+"""Tests for agent.token_usage_tracker — tiktoken counting + 3-way usage tracking."""
 
 from __future__ import annotations
 
@@ -6,14 +6,13 @@ from unittest.mock import MagicMock
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from agent.tokens import (
-    InvocationUsage,
+from agent.token_usage_tracker import (
+    _count_messages_split,
+    _extract_provider_usage,
     count_tokens,
     get_usage,
     record_llm_call,
     reset_usage,
-    _count_messages_split,
-    _extract_provider_usage,
 )
 
 

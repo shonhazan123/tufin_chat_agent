@@ -18,7 +18,7 @@ from app.db.migrate import upgrade_database
 from app.db.session import dispose_engine, init_db
 from app.middleware.error_handler import register_exception_handlers
 from app.warmup import warmup_model
-from agent.startup import startup
+from agent.startup_initialization import startup
 
 logging.basicConfig(
     level=logging.INFO,

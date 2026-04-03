@@ -12,9 +12,9 @@ from agent.graph_nodes import (
     response_node,
     route_after_executor,
 )
-from agent.state import AgentState
+from agent.types.agent_state import AgentState
 
-_compiled = None
+_compiled_execution_graph = None
 
 
 def build_graph():
@@ -51,13 +51,13 @@ def build_graph():
     graph.add_edge("prepare_context", "responder")
     graph.add_edge("responder", END)
 
-    global _compiled
-    _compiled = graph.compile()
-    return _compiled
+    global _compiled_execution_graph
+    _compiled_execution_graph = graph.compile()
+    return _compiled_execution_graph
 
 
 def get_graph():
     """Return the compiled graph. Raises RuntimeError if not built yet."""
-    if _compiled is None:
+    if _compiled_execution_graph is None:
         raise RuntimeError("Graph not compiled — call startup() first")
-    return _compiled
+    return _compiled_execution_graph

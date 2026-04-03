@@ -2,29 +2,23 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 from typing import Any
 
 import aiohttp
-from langchain_core.messages import HumanMessage, SystemMessage
 
-from agent.llm import get_llm_semaphore
-from agent.tokens import record_llm_call
-from agent.yaml_config import load_config
-from agent.tools.base import (
+from agent.config_loader import load_config
+from agent.tools.tool_base_classes import (
     BaseToolAgent,
     ToolInvocation,
     ToolParamValidationError,
     ToolSpec,
     registry,
-    strip_json_fence,
 )
 
 logger = logging.getLogger(__name__)
 
-SPEC = ToolSpec(
+TOOL_SPEC = ToolSpec(
     name="unit_converter",
     type="llm",
     purpose="Convert a value between units (length, weight, temperature, currency).",
@@ -81,9 +75,7 @@ SPEC = ToolSpec(
     default_ttl_seconds=60,
 )
 
-UNIT_CONVERTER_SYSTEM = SPEC.system_prompt
-
-_LENGTH = {
+_LENGTH_CONVERSIONS = {
     ("km", "miles"): (0.621371, "{v} * 0.621371"),
     ("miles", "km"): (1.60934, "{v} * 1.60934"),
     ("m", "ft"): (3.28084, "{v} * 3.28084"),
@@ -96,7 +88,7 @@ _LENGTH = {
     ("inches", "ft"): (1 / 12, "{v} / 12"),
 }
 
-_WEIGHT = {
+_WEIGHT_CONVERSIONS = {
     ("kg", "lb"): (2.20462, "{v} * 2.20462"),
     ("lb", "kg"): (0.453592, "{v} * 0.453592"),
     ("g", "oz"): (0.035274, "{v} * 0.035274"),
@@ -105,13 +97,13 @@ _WEIGHT = {
     ("g", "kg"): (0.001, "{v} * 0.001"),
 }
 
-_CURRENCIES = {
+_SUPPORTED_CURRENCY_CODES = {
     "USD", "EUR", "GBP", "JPY", "CAD", "AUD", "CHF", "CNY", "INR", "BRL",
     "MXN", "KRW", "SEK", "NOK", "DKK", "NZD", "SGD", "HKD", "TRY", "ILS",
 }
 
 
-def _normalize(unit: str) -> str:
+def _normalize_unit_symbol(unit: str) -> str:
     """Normalize unit names for lookup."""
     mapping = {
         "celsius": "C", "fahrenheit": "F", "kelvin": "K",
@@ -128,26 +120,29 @@ def _normalize(unit: str) -> str:
         "ounce": "oz", "ounces": "oz",
     }
     lower = unit.strip().lower()
-    return mapping.get(lower, unit.strip().upper() if lower in {c.lower() for c in _CURRENCIES} else lower)
+    return mapping.get(
+        lower,
+        unit.strip().upper() if lower in {c.lower() for c in _SUPPORTED_CURRENCY_CODES} else lower,
+    )
 
 
-def _uc_params_valid(params: dict[str, Any]) -> bool:
+def _unit_converter_params_valid(params: dict[str, Any]) -> bool:
     if "value" not in params:
         return False
     try:
         float(params["value"])
     except (TypeError, ValueError):
         return False
-    fu = params.get("from_unit", "")
-    tu = params.get("to_unit", "")
-    if not isinstance(fu, str) or not str(fu).strip():
+    from_unit_raw = params.get("from_unit", "")
+    to_unit_raw = params.get("to_unit", "")
+    if not isinstance(from_unit_raw, str) or not str(from_unit_raw).strip():
         return False
-    if not isinstance(tu, str) or not str(tu).strip():
+    if not isinstance(to_unit_raw, str) or not str(to_unit_raw).strip():
         return False
     return True
 
 
-def _convert_temperature(value: float, from_u: str, to_u: str) -> tuple[float, str]:
+def _convert_temperature(value: float, from_unit: str, to_unit: str) -> tuple[float, str]:
     """Convert between C, F, K."""
     conversions = {
         ("C", "F"): (lambda v: v * 9 / 5 + 32, "{v} * 9/5 + 32"),
@@ -157,25 +152,25 @@ def _convert_temperature(value: float, from_u: str, to_u: str) -> tuple[float, s
         ("F", "K"): (lambda v: (v - 32) * 5 / 9 + 273.15, "({v} - 32) * 5/9 + 273.15"),
         ("K", "F"): (lambda v: (v - 273.15) * 9 / 5 + 32, "({v} - 273.15) * 9/5 + 32"),
     }
-    key = (from_u, to_u)
+    key = (from_unit, to_unit)
     if key not in conversions:
-        raise ValueError(f"Unsupported temperature conversion: {from_u} → {to_u}")
-    fn, formula = conversions[key]
-    return fn(value), formula
+        raise ValueError(f"Unsupported temperature conversion: {from_unit} → {to_unit}")
+    conversion_function, formula = conversions[key]
+    return conversion_function(value), formula
 
 
 async def _convert_currency(
-    value: float, from_u: str, to_u: str
+    value: float, from_unit: str, to_unit: str
 ) -> tuple[float, str]:
     """Convert currency via exchangerate-api.com."""
-    cfg = load_config()
-    api_key = cfg["tools"]["unit_converter"].get("currency_api_key", "")
+    config = load_config()
+    api_key = config["tools"]["unit_converter"].get("currency_api_key", "")
     if not api_key:
         raise ValueError(
             "Currency conversion requires EXCHANGE_API_KEY in .env"
         )
 
-    url = f"https://v6.exchangerate-api.com/v6/{api_key}/pair/{from_u}/{to_u}/{value}"
+    url = f"https://v6.exchangerate-api.com/v6/{api_key}/pair/{from_unit}/{to_unit}/{value}"
     async with aiohttp.ClientSession() as session:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             resp.raise_for_status()
@@ -189,98 +184,77 @@ async def _convert_currency(
     return float(converted), f"{{v}} * {rate}"
 
 
-@registry.register(SPEC)
+@registry.register(TOOL_SPEC)
 class UnitConverterAgent(BaseToolAgent):
-    SYSTEM = UNIT_CONVERTER_SYSTEM
+    async def _tool_executor(self, tool_invocation: ToolInvocation) -> dict[str, Any]:
+        params = dict(tool_invocation.planner_params)
+        used_parameter_specialist_llm = False
 
-    async def _llm_json_params_once(self, inv: ToolInvocation) -> dict[str, Any]:
-        parts = [
-            f"User request: {inv.user_msg}",
-            f"Conversation context (summary): {inv.context_summary or '(none)'}",
-            f"Sub-task from plan: {inv.sub_task}",
-            f"Prior tool results: {json.dumps(inv.prior_results, default=str)}",
-            "Reply with a single JSON object only — no markdown, no fences, "
-            "no explanation outside the JSON.",
-        ]
-        human_content = "\n".join(parts)
-        messages = [
-            SystemMessage(content=self.SYSTEM),
-            HumanMessage(content=human_content),
-        ]
-        async with get_llm_semaphore():
-            params_msg = await asyncio.wait_for(
-                self.llm.ainvoke(messages),
-                timeout=self.timeout,
-            )
-        record_llm_call(f"tool:{self.spec.name}", params_msg, messages=messages, model=self.llm.model_name)
-        raw = strip_json_fence(params_msg.content)
-        parsed = json.loads(raw)
-        if not isinstance(parsed, dict):
-            raise ValueError("JSON root must be an object")
-        return parsed
+        if tool_invocation.has_dependencies or not _unit_converter_params_valid(params):
+            params = await self._invoke_parameter_specialist_llm(tool_invocation)
+            used_parameter_specialist_llm = True
 
-    async def _tool_executor(self, inv: ToolInvocation) -> dict[str, Any]:
-        params = dict(inv.planner_params)
-        used_llm = False
-
-        if inv.has_dependencies or not _uc_params_valid(params):
-            params = await self._llm_json_params_once(inv)
-            used_llm = True
-
-        if not _uc_params_valid(params):
+        if not _unit_converter_params_valid(params):
             raise ToolParamValidationError(
                 "unit_converter: missing or invalid value/from_unit/to_unit"
             )
 
         result = await self._convert_backend(params)
-        if used_llm:
+        if used_parameter_specialist_llm:
             result["_resolved_params"] = params
         return result
 
     async def _convert_backend(self, params: dict[str, Any]) -> dict[str, Any]:
         value = float(params["value"])
-        from_unit = _normalize(str(params.get("from_unit", "")))
-        to_unit = _normalize(str(params.get("to_unit", "")))
-        if not from_unit or not to_unit:
+        from_unit_normalized = _normalize_unit_symbol(str(params.get("from_unit", "")))
+        to_unit_normalized = _normalize_unit_symbol(str(params.get("to_unit", "")))
+        if not from_unit_normalized or not to_unit_normalized:
             raise ValueError("Missing 'from_unit' or 'to_unit'")
 
-        if from_unit == to_unit:
+        if from_unit_normalized == to_unit_normalized:
             return {
                 "result": value,
-                "from_unit": from_unit,
-                "to_unit": to_unit,
+                "from_unit": from_unit_normalized,
+                "to_unit": to_unit_normalized,
                 "formula": "identity (same unit)",
             }
 
-        if from_unit in ("C", "F", "K") and to_unit in ("C", "F", "K"):
-            result, formula = _convert_temperature(value, from_unit, to_unit)
+        if from_unit_normalized in ("C", "F", "K") and to_unit_normalized in ("C", "F", "K"):
+            numeric_result, formula = _convert_temperature(
+                value, from_unit_normalized, to_unit_normalized
+            )
             return {
-                "result": round(result, 4),
-                "from_unit": from_unit,
-                "to_unit": to_unit,
+                "result": round(numeric_result, 4),
+                "from_unit": from_unit_normalized,
+                "to_unit": to_unit_normalized,
                 "formula": formula.format(v=value),
             }
 
-        if from_unit in _CURRENCIES and to_unit in _CURRENCIES:
-            result, formula = await _convert_currency(value, from_unit, to_unit)
+        if (
+            from_unit_normalized in _SUPPORTED_CURRENCY_CODES
+            and to_unit_normalized in _SUPPORTED_CURRENCY_CODES
+        ):
+            numeric_result, formula = await _convert_currency(
+                value, from_unit_normalized, to_unit_normalized
+            )
             return {
-                "result": round(result, 4),
-                "from_unit": from_unit,
-                "to_unit": to_unit,
+                "result": round(numeric_result, 4),
+                "from_unit": from_unit_normalized,
+                "to_unit": to_unit_normalized,
                 "formula": formula.format(v=value),
             }
 
-        for table in (_LENGTH, _WEIGHT):
-            key = (from_unit, to_unit)
+        for table in (_LENGTH_CONVERSIONS, _WEIGHT_CONVERSIONS):
+            key = (from_unit_normalized, to_unit_normalized)
             if key in table:
                 factor, formula = table[key]
                 return {
                     "result": round(value * factor, 4),
-                    "from_unit": from_unit,
-                    "to_unit": to_unit,
+                    "from_unit": from_unit_normalized,
+                    "to_unit": to_unit_normalized,
                     "formula": formula.format(v=value),
                 }
 
         raise ValueError(
-            f"Unsupported conversion: {from_unit} → {to_unit}"
+            f"Unsupported conversion: {from_unit_normalized} → {to_unit_normalized}"
         )

@@ -43,7 +43,7 @@ async def health(request: Request) -> HealthResponse:
         from agent.graph import get_graph
         get_graph()
         agent_state = "ok"
-        from agent.yaml_config import load_config
+        from agent.config_loader import load_config
         cfg = load_config()
         provider = cfg.get("provider")
         agents_cfg = cfg.get("agents") or {}

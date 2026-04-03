@@ -19,7 +19,7 @@ def _api_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REDIS_URL", "")
     monkeypatch.delenv("API_KEY", raising=False)
     get_settings.cache_clear()
-    monkeypatch.setattr("agent.startup.startup", AsyncMock())
+    monkeypatch.setattr("agent.startup_initialization.startup", AsyncMock())
 
 
 @pytest.fixture

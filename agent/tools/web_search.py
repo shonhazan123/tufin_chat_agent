@@ -10,14 +10,20 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from agent.llm import get_llm_semaphore
-from agent.tokens import record_llm_call
-from agent.yaml_config import load_config
-from agent.tools.base import BaseToolAgent, ToolInvocation, ToolSpec, registry, strip_json_fence
+from agent.config_loader import load_config
+from agent.llm_provider_factory import get_llm_semaphore
+from agent.token_usage_tracker import record_llm_call
+from agent.tools.tool_base_classes import (
+    BaseToolAgent,
+    ToolInvocation,
+    ToolSpec,
+    registry,
+    strip_json_fence,
+)
 
 logger = logging.getLogger(__name__)
 
-SPEC = ToolSpec(
+TOOL_SPEC = ToolSpec(
     name="web_search",
     type="llm",
     purpose="Search the web for current information and return a summary of results.",
@@ -78,8 +84,6 @@ EXTRACT_SYSTEM = (
     "Raw JSON only — no markdown fences, no commentary.\n"
 )
 
-WEB_SEARCH_SYSTEM = SPEC.system_prompt
-
 
 def _parse_answer(raw_content: str) -> str:
     """Extract the plain-text answer from the extraction LLM response.
@@ -105,60 +109,32 @@ def _parse_answer(raw_content: str) -> str:
 
 
 def _query_params_valid(params: dict[str, Any]) -> bool:
-    q = params.get("query", "")
-    return isinstance(q, str) and bool(q.strip())
+    query_value = params.get("query", "")
+    return isinstance(query_value, str) and bool(query_value.strip())
 
 
-@registry.register(SPEC)
+@registry.register(TOOL_SPEC)
 class WebSearchAgent(BaseToolAgent):
-    SYSTEM = WEB_SEARCH_SYSTEM
-
     def __init__(self) -> None:
         super().__init__()
-        cfg = load_config()
-        tool_cfg = cfg["tools"]["web_search"]
-        api_key = tool_cfg.get("api_key", "")
+        config = load_config()
+        tool_config = config["tools"]["web_search"]
+        api_key = tool_config.get("api_key", "")
         if api_key:
             os.environ.setdefault("TAVILY_API_KEY", api_key)
-        self.max_results: int = tool_cfg.get("max_results", 5)
+        self.max_results: int = tool_config.get("max_results", 5)
 
-    async def _llm_json_params_once(self, inv: ToolInvocation) -> dict[str, Any]:
-        parts = [
-            f"User request: {inv.user_msg}",
-            f"Conversation context (summary): {inv.context_summary or '(none)'}",
-            f"Sub-task from plan: {inv.sub_task}",
-            f"Prior tool results: {json.dumps(inv.prior_results, default=str)}",
-            "Reply with a single JSON object only — no markdown, no fences, "
-            "no explanation outside the JSON.",
-        ]
-        human_content = "\n".join(parts)
-        messages = [
-            SystemMessage(content=self.SYSTEM),
-            HumanMessage(content=human_content),
-        ]
-        async with get_llm_semaphore():
-            params_msg = await asyncio.wait_for(
-                self.llm.ainvoke(messages),
-                timeout=self.timeout,
-            )
-        record_llm_call(f"tool:{self.spec.name}", params_msg, messages=messages, model=self.llm.model_name)
-        raw = strip_json_fence(params_msg.content)
-        parsed = json.loads(raw)
-        if not isinstance(parsed, dict):
-            raise ValueError("JSON root must be an object")
-        return parsed
+    async def _tool_executor(self, tool_invocation: ToolInvocation) -> dict[str, Any]:
+        params = dict(tool_invocation.planner_params)
 
-    async def _tool_executor(self, inv: ToolInvocation) -> dict[str, Any]:
-        params = dict(inv.planner_params)
-
-        if inv.has_dependencies or not _query_params_valid(params):
-            params = await self._llm_json_params_once(inv)
+        if tool_invocation.has_dependencies or not _query_params_valid(params):
+            params = await self._invoke_parameter_specialist_llm(tool_invocation)
 
         if not _query_params_valid(params):
             return {"query": "", "answer": "No query provided.", "sources": []}
 
         raw = await self._fetch_results(params)
-        return await self._extract_answer(inv, params, raw)
+        return await self._extract_answer(tool_invocation, params, raw)
 
     async def _fetch_results(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         query = str(params.get("query", "")).strip()
@@ -168,33 +144,33 @@ class WebSearchAgent(BaseToolAgent):
         wrapper = TavilySearchAPIWrapper(tavily_api_key=os.environ.get("TAVILY_API_KEY", ""))
         raw_results = await wrapper.results_async(query, max_results=self.max_results)
 
-        results = []
-        for r in raw_results:
+        results: list[dict[str, Any]] = []
+        for row in raw_results:
             results.append({
-                "title": r.get("title", ""),
-                "url": r.get("url", ""),
-                "content": r.get("content", "")[:500],
+                "title": row.get("title", ""),
+                "url": row.get("url", ""),
+                "content": row.get("content", "")[:500],
             })
         return results
 
     async def _extract_answer(
         self,
-        inv: ToolInvocation,
+        tool_invocation: ToolInvocation,
         params: dict[str, Any],
         raw_results: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """LLM reasoning step: read raw search results and extract the relevant answer."""
         query = str(params.get("query", "")).strip()
-        sources = [{"title": r["title"], "url": r["url"]} for r in raw_results]
+        sources = [{"title": row["title"], "url": row["url"]} for row in raw_results]
 
         results_text = "\n\n".join(
-            f"[{i+1}] {r['title']}\n{r['content']}"
-            for i, r in enumerate(raw_results)
+            f"[{index + 1}] {row['title']}\n{row['content']}"
+            for index, row in enumerate(raw_results)
         )
 
         human_content = (
-            f"User request: {inv.user_msg}\n"
-            f"Sub-task: {inv.sub_task}\n"
+            f"User request: {tool_invocation.user_msg}\n"
+            f"Sub-task: {tool_invocation.sub_task}\n"
             f"Search query: {query}\n\n"
             f"Search results:\n{results_text}\n\n"
             "Extract the relevant answer as JSON."
@@ -208,7 +184,12 @@ class WebSearchAgent(BaseToolAgent):
                 self.llm.ainvoke(messages),
                 timeout=self.timeout,
             )
-        record_llm_call(f"tool:{self.spec.name}:extract", result, messages=messages, model=self.llm.model_name)
+        record_llm_call(
+            f"tool:{self.spec.name}:extract",
+            result,
+            messages=messages,
+            model=self.llm.model_name,
+        )
         answer = _parse_answer(result.content)
 
         return {

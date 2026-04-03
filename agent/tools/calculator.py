@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import json
 import logging
 import math
 import operator
@@ -12,23 +11,18 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
-
-from agent.llm import get_llm_semaphore
-from agent.tokens import record_llm_call
-from agent.tools.base import (
+from agent.tools.tool_base_classes import (
     BaseToolAgent,
     ToolInvocation,
     ToolParamValidationError,
     ToolSpec,
     UserFacingToolError,
     registry,
-    strip_json_fence,
 )
 
 logger = logging.getLogger(__name__)
 
-SPEC = ToolSpec(
+TOOL_SPEC = ToolSpec(
     name="calculator",
     type="llm",
     purpose="Evaluate a mathematical expression and return the numeric result.",
@@ -86,8 +80,6 @@ SPEC = ToolSpec(
     default_ttl_seconds=0,
 )
 
-CALCULATOR_SYSTEM = SPEC.system_prompt
-
 _SAFE_OPS = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -123,7 +115,7 @@ _SAFE_FUNCS = {
     "floor": math.floor,
 }
 
-_pool = ThreadPoolExecutor(max_workers=4)
+_expression_thread_pool = ThreadPoolExecutor(max_workers=4)
 
 # Collapse accidental "****" after normalizing mixed ^ and ** (e.g. "^**" → "****").
 _RE_COLLAPSE_POW = re.compile(r"\*{4,}")
@@ -131,15 +123,14 @@ _RE_COLLAPSE_POW = re.compile(r"\*{4,}")
 
 def _normalize_expression(expression: str) -> str:
     """Map school-style ^ to Python ** for exponentiation; trim whitespace."""
-    s = expression.strip().replace("^", "**")
-    s = _RE_COLLAPSE_POW.sub("**", s)
-    return s
+    normalized = expression.strip().replace("^", "**")
+    normalized = _RE_COLLAPSE_POW.sub("**", normalized)
+    return normalized
 
 
 def _expression_params_valid(params: dict[str, Any]) -> bool:
-    exp = params.get("expression")
-    return isinstance(exp, str) and bool(str(exp).strip())
-
+    expression_value = params.get("expression")
+    return isinstance(expression_value, str) and bool(str(expression_value).strip())
 
 
 def _safe_eval_node(node: ast.AST) -> float:
@@ -248,43 +239,15 @@ def _map_eval_exception(exc: BaseException) -> UserFacingToolError:
     )
 
 
-@registry.register(SPEC)
+@registry.register(TOOL_SPEC)
 class CalculatorAgent(BaseToolAgent):
-    SYSTEM = CALCULATOR_SYSTEM
+    async def _tool_executor(self, tool_invocation: ToolInvocation) -> dict[str, Any]:
+        params = dict(tool_invocation.planner_params)
+        used_parameter_specialist_llm = False
 
-    async def _llm_json_params_once(self, inv: ToolInvocation) -> dict[str, Any]:
-        parts = [
-            f"User request: {inv.user_msg}",
-            f"Conversation context (summary): {inv.context_summary or '(none)'}",
-            f"Sub-task from plan: {inv.sub_task}",
-            f"Prior tool results: {json.dumps(inv.prior_results, default=str)}",
-            "Reply with a single JSON object only — no markdown, no fences, "
-            "no explanation outside the JSON.",
-        ]
-        human_content = "\n".join(parts)
-        messages = [
-            SystemMessage(content=self.SYSTEM),
-            HumanMessage(content=human_content),
-        ]
-        async with get_llm_semaphore():
-            params_msg = await asyncio.wait_for(
-                self.llm.ainvoke(messages),
-                timeout=self.timeout,
-            )
-        record_llm_call(f"tool:{self.spec.name}", params_msg, messages=messages, model=self.llm.model_name)
-        raw = strip_json_fence(params_msg.content)
-        parsed = json.loads(raw)
-        if not isinstance(parsed, dict):
-            raise ValueError("JSON root must be an object")
-        return parsed
-
-    async def _tool_executor(self, inv: ToolInvocation) -> dict[str, Any]:
-        params = dict(inv.planner_params)
-        used_llm = False
-
-        if inv.has_dependencies or not _expression_params_valid(params):
-            params = await self._llm_json_params_once(inv)
-            used_llm = True
+        if tool_invocation.has_dependencies or not _expression_params_valid(params):
+            params = await self._invoke_parameter_specialist_llm(tool_invocation)
+            used_parameter_specialist_llm = True
 
         if not _expression_params_valid(params):
             raise ToolParamValidationError(
@@ -292,7 +255,7 @@ class CalculatorAgent(BaseToolAgent):
             )
 
         result = await self._eval_expression(params)
-        if used_llm:
+        if used_parameter_specialist_llm:
             result["_resolved_params"] = params
         return result
 
@@ -302,9 +265,11 @@ class CalculatorAgent(BaseToolAgent):
             raise UserFacingToolError("No expression was provided to evaluate.")
         loop = asyncio.get_running_loop()
         try:
-            result = await loop.run_in_executor(_pool, _safe_eval, expression)
+            numeric_result = await loop.run_in_executor(
+                _expression_thread_pool, _safe_eval, expression
+            )
         except UserFacingToolError:
             raise
         except Exception as exc:
             raise _map_eval_exception(exc) from exc
-        return {"result": result}
+        return {"result": numeric_result}

@@ -2,29 +2,23 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 from typing import Any
 
 import aiohttp
-from langchain_core.messages import HumanMessage, SystemMessage
 
-from agent.llm import get_llm_semaphore
-from agent.tokens import record_llm_call
-from agent.yaml_config import load_config
-from agent.tools.base import (
+from agent.config_loader import load_config
+from agent.tools.tool_base_classes import (
     BaseToolAgent,
     ToolInvocation,
     ToolParamValidationError,
     ToolSpec,
     registry,
-    strip_json_fence,
 )
 
 logger = logging.getLogger(__name__)
 
-SPEC = ToolSpec(
+TOOL_SPEC = ToolSpec(
     name="weather",
     type="llm",
     purpose="Get current weather conditions for a location.",
@@ -68,8 +62,6 @@ SPEC = ToolSpec(
     default_ttl_seconds=300,
 )
 
-WEATHER_SYSTEM = SPEC.system_prompt
-
 
 def _weather_params_usable(params: dict[str, Any]) -> bool:
     city = params.get("city")
@@ -84,74 +76,41 @@ def _weather_params_usable(params: dict[str, Any]) -> bool:
     return True
 
 
-@registry.register(SPEC)
+@registry.register(TOOL_SPEC)
 class WeatherAgent(BaseToolAgent):
-    SYSTEM = WEATHER_SYSTEM
+    async def _tool_executor(self, tool_invocation: ToolInvocation) -> dict[str, Any]:
+        params = dict(tool_invocation.planner_params)
 
-    async def _llm_json_params_once(self, inv: ToolInvocation) -> dict[str, Any]:
-        parts = [
-            f"User request: {inv.user_msg}",
-            f"Conversation context (summary): {inv.context_summary or '(none)'}",
-            f"Sub-task from plan: {inv.sub_task}",
-            f"Prior tool results: {json.dumps(inv.prior_results, default=str)}",
-            "Reply with a single JSON object only — no markdown, no fences, "
-            "no explanation outside the JSON.",
-        ]
-        human_content = "\n".join(parts)
-        messages = [
-            SystemMessage(content=self.SYSTEM),
-            HumanMessage(content=human_content),
-        ]
-        async with get_llm_semaphore():
-            params_msg = await asyncio.wait_for(
-                self.llm.ainvoke(messages),
-                timeout=self.timeout,
-            )
-        record_llm_call(f"tool:{self.spec.name}", params_msg, messages=messages, model=self.llm.model_name)
-        raw = strip_json_fence(params_msg.content)
-        parsed = json.loads(raw)
-        if not isinstance(parsed, dict):
-            raise ValueError("JSON root must be an object")
-        return parsed
-
-    async def _tool_executor(self, inv: ToolInvocation) -> dict[str, Any]:
-        params = dict(inv.planner_params)
-        used_llm = False
-
-        if inv.has_dependencies or not _weather_params_usable(params):
-            params = await self._llm_json_params_once(inv)
-            used_llm = True
+        if tool_invocation.has_dependencies or not _weather_params_usable(params):
+            params = await self._invoke_parameter_specialist_llm(tool_invocation)
 
         if not _weather_params_usable(params):
             raise ToolParamValidationError(
                 "weather: invalid city/units in planner or tool LLM output"
             )
 
-        result = await self._fetch_weather(params)
-        if used_llm:
-            result["_resolved_params"] = params
-        return result
+        return await self._fetch_weather(params)
 
     async def _fetch_weather(self, params: dict[str, Any]) -> dict[str, Any]:
         city = params.get("city", "London")
-        cfg = load_config()
-        tool_cfg = cfg["tools"]["weather"]
-        api_key = tool_cfg.get("api_key", "")
-        timeout = tool_cfg.get("timeout_seconds", 5)
+        config = load_config()
+        tool_config = config["tools"]["weather"]
+        api_key = tool_config.get("api_key", "")
+        timeout_seconds = tool_config.get("timeout_seconds", 5)
 
         if api_key:
-            return await self._call_weatherapi(city, api_key, timeout)
-        return await self._call_wttr(city, timeout)
+            return await self._call_weatherapi(city, api_key, timeout_seconds)
+        return await self._call_wttr(city, timeout_seconds)
 
     async def _call_weatherapi(
-        self, city: str, api_key: str, timeout: int
+        self, city: str, api_key: str, timeout_seconds: int
     ) -> dict[str, Any]:
         """Call WeatherAPI.com with API key."""
         url = "https://api.weatherapi.com/v1/current.json"
-        req_params = {"key": api_key, "q": city, "aqi": "no"}
+        request_params = {"key": api_key, "q": city, "aqi": "no"}
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                url, params=req_params, timeout=aiohttp.ClientTimeout(total=timeout)
+                url, params=request_params, timeout=aiohttp.ClientTimeout(total=timeout_seconds)
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
@@ -164,13 +123,13 @@ class WeatherAgent(BaseToolAgent):
             "city_name": data["location"]["name"],
         }
 
-    async def _call_wttr(self, city: str, timeout: int) -> dict[str, Any]:
+    async def _call_wttr(self, city: str, timeout_seconds: int) -> dict[str, Any]:
         """Fallback: wttr.in free API (no key needed)."""
         url = f"https://wttr.in/{city}"
-        req_params = {"format": "j1"}
+        request_params = {"format": "j1"}
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                url, params=req_params, timeout=aiohttp.ClientTimeout(total=timeout)
+                url, params=request_params, timeout=aiohttp.ClientTimeout(total=timeout_seconds)
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json()

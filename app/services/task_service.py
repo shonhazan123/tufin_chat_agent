@@ -11,8 +11,8 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agent.context import conversation_context
-from agent.yaml_config import load_config
+from agent.conversation_memory import conversation_context
+from agent.config_loader import load_config
 from app.cache.redis_cache import RedisCache
 from app.db.models import Task, TaskStatus
 from app.db.task_repository import TaskRepository

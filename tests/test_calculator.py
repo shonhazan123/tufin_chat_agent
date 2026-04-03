@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.tools.base import ToolInvocation, UserFacingToolError
+from agent.types import ToolInvocation, UserFacingToolError
 from agent.tools.calculator import _normalize_expression, _safe_eval
 
 
@@ -100,7 +100,7 @@ async def test_run_eval_division_by_zero_raises_no_llm():
     """Planner supplied a valid expression that fails at eval — no tool LLM recovery."""
     from agent.tools.calculator import CalculatorAgent
 
-    with patch("agent.tools.base.build_llm") as mock_build:
+    with patch("agent.tools.tool_base_classes.build_llm") as mock_build:
         mock_llm = AsyncMock()
         mock_build.return_value = mock_llm
         agent = CalculatorAgent()
@@ -121,7 +121,7 @@ async def test_run_invalid_planner_expression_uses_tool_llm():
     """Empty expression triggers tool LLM to infer params."""
     from agent.tools.calculator import CalculatorAgent
 
-    with patch("agent.tools.base.build_llm") as mock_build:
+    with patch("agent.tools.tool_base_classes.build_llm") as mock_build:
         mock_llm = AsyncMock()
         mock_build.return_value = mock_llm
         mock_llm.ainvoke = AsyncMock(

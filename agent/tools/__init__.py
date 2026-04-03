@@ -1,7 +1,7 @@
 """Tool autodiscovery — imports every .py in this package at startup.
 
-The @registry.register(SPEC) decorators fire on import, populating the
-AgentRegistry before prompts.py builds PLANNER_SYSTEM.
+The @registry.register(...) decorators fire on import, populating the
+AgentRegistry before llm_system_prompts builds the planner prompt.
 """
 
 from __future__ import annotations
@@ -12,19 +12,19 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_SKIP = {"__init__", "base"}
+_SKIP_MODULES = {"__init__", "tool_base_classes"}
 
 
 def discover_tools() -> None:
-    """Import all tool modules in this directory (excluding base and __init__)."""
+    """Import all tool modules in this directory (excluding tool_base_classes and __init__)."""
     package_dir = Path(__file__).resolve().parent
     for path in sorted(package_dir.glob("*.py")):
         module_name = path.stem
-        if module_name in _SKIP:
+        if module_name in _SKIP_MODULES:
             continue
-        fqn = f"agent.tools.{module_name}"
+        fully_qualified_module_name = f"agent.tools.{module_name}"
         try:
-            importlib.import_module(fqn)
-            logger.info("Autodiscovered tool module: %s", fqn)
+            importlib.import_module(fully_qualified_module_name)
+            logger.info("Autodiscovered tool module: %s", fully_qualified_module_name)
         except Exception:
-            logger.exception("Failed to import tool module: %s", fqn)
+            logger.exception("Failed to import tool module: %s", fully_qualified_module_name)

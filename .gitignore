@@ -2,6 +2,8 @@
 .cursor/
 .claude/
 
+project-instruction/
+
 # Environment & secrets
 .env
 .env.*

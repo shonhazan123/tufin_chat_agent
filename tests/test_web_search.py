@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.tools.base import ToolInvocation
+from agent.types import ToolInvocation
 from agent.tools.web_search import WebSearchAgent
 
 
@@ -18,7 +18,7 @@ def _mock_llm_response(content: str) -> MagicMock:
 
 @pytest.fixture()
 def search_agent():
-    with patch("agent.tools.base.build_llm") as mock_build:
+    with patch("agent.tools.tool_base_classes.build_llm") as mock_build:
         mock_llm = AsyncMock()
         mock_build.return_value = mock_llm
         agent = WebSearchAgent()

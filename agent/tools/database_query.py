@@ -12,10 +12,10 @@ from typing import Any
 import aiosqlite
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from agent.llm import get_llm_semaphore
-from agent.tokens import record_llm_call
-from agent.yaml_config import load_config
-from agent.tools.base import (
+from agent.config_loader import load_config
+from agent.llm_provider_factory import get_llm_semaphore
+from agent.token_usage_tracker import record_llm_call
+from agent.tools.tool_base_classes import (
     BaseToolAgent,
     ToolInvocation,
     ToolSpec,
@@ -27,9 +27,13 @@ from scripts.seed_catalog import PRODUCTS_DDL, ORDERS_DDL
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_DDL = PRODUCTS_DDL.replace("IF NOT EXISTS ", "") + "\n" + ORDERS_DDL.replace("IF NOT EXISTS ", "")
+_SCHEMA_DDL = (
+    PRODUCTS_DDL.replace("IF NOT EXISTS ", "")
+    + "\n"
+    + ORDERS_DDL.replace("IF NOT EXISTS ", "")
+)
 
-SPEC = ToolSpec(
+TOOL_SPEC = ToolSpec(
     name="database_query",
     type="llm",
     purpose=(
@@ -86,8 +90,6 @@ SPEC = ToolSpec(
     default_ttl_seconds=120,
 )
 
-DATABASE_QUERY_SYSTEM = SPEC.system_prompt
-
 _MUTATING_PATTERN = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|REPLACE|ATTACH|DETACH|REINDEX|VACUUM|PRAGMA)\b",
     re.IGNORECASE,
@@ -140,10 +142,10 @@ def ensure_limit(sql: str, max_rows: int = 50) -> str:
 
 
 def _resolve_db_path() -> Path:
-    cfg = load_config()
-    tool_cfg = cfg.get("tools", {}).get("database_query", {})
-    raw = tool_cfg.get("db_path", "./data/catalog.db")
-    return Path(raw)
+    config = load_config()
+    tool_config = config.get("tools", {}).get("database_query", {})
+    raw_path = tool_config.get("db_path", "./data/catalog.db")
+    return Path(raw_path)
 
 
 async def execute_query(sql: str, db_path: Path) -> dict[str, Any]:
@@ -154,7 +156,7 @@ async def execute_query(sql: str, db_path: Path) -> dict[str, Any]:
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
         rows = await cursor.fetchall()
 
-    rows_as_lists = [list(r) for r in rows]
+    rows_as_lists = [list(row) for row in rows]
     return {
         "columns": columns,
         "rows": rows_as_lists,
@@ -163,15 +165,13 @@ async def execute_query(sql: str, db_path: Path) -> dict[str, Any]:
     }
 
 
-@registry.register(SPEC)
+@registry.register(TOOL_SPEC)
 class DatabaseQueryAgent(BaseToolAgent):
-    SYSTEM = DATABASE_QUERY_SYSTEM
-
     def __init__(self) -> None:
         super().__init__()
         self._db_path = _resolve_db_path()
-        cfg = load_config()
-        self._max_rows: int = cfg.get("tools", {}).get("database_query", {}).get("max_rows", 50)
+        config = load_config()
+        self._max_rows: int = config.get("tools", {}).get("database_query", {}).get("max_rows", 50)
         self._catalog_available = True
         self._ensure_catalog()
 
@@ -188,20 +188,24 @@ class DatabaseQueryAgent(BaseToolAgent):
             logger.exception("Auto-seed of catalog DB failed")
             self._catalog_available = False
 
-    async def _generate_sql(self, inv: ToolInvocation) -> str:
+    async def _generate_sql(self, tool_invocation: ToolInvocation) -> str:
         """Call the tool LLM to produce a SQL SELECT from the user question."""
-        question = (inv.planner_params.get("question") or "").strip() or inv.sub_task
+        question = (
+            (tool_invocation.planner_params.get("question") or "").strip()
+            or tool_invocation.sub_task
+        )
         parts = [
-            f"User request: {inv.user_msg}",
+            f"User request: {tool_invocation.user_msg}",
             f"Data question: {question}",
-            f"Conversation context (summary): {inv.context_summary or '(none)'}",
-            f"Prior tool results: {json.dumps(inv.prior_results, default=str)}",
+            f"Conversation context (summary): {tool_invocation.context_summary or '(none)'}",
+            f"Prior tool results: {json.dumps(tool_invocation.prior_results, default=str)}",
             "Reply with a single JSON object only — no markdown, no fences, "
             "no explanation outside the JSON.",
         ]
         human_content = "\n".join(parts)
+        sql_specialist_prompt = self.spec.system_prompt or ""
         messages = [
-            SystemMessage(content=self.SYSTEM),
+            SystemMessage(content=sql_specialist_prompt),
             HumanMessage(content=human_content),
         ]
         async with get_llm_semaphore():
@@ -209,7 +213,9 @@ class DatabaseQueryAgent(BaseToolAgent):
                 self.llm.ainvoke(messages),
                 timeout=self.timeout,
             )
-        record_llm_call(f"tool:{self.spec.name}", result, messages=messages, model=self.llm.model_name)
+        record_llm_call(
+            f"tool:{self.spec.name}", result, messages=messages, model=self.llm.model_name
+        )
         raw = strip_json_fence(result.content)
         try:
             parsed = json.loads(raw)
@@ -226,20 +232,20 @@ class DatabaseQueryAgent(BaseToolAgent):
             raise UserFacingToolError("The model did not produce a valid SQL query.")
         return sql.strip()
 
-    async def _tool_executor(self, inv: ToolInvocation) -> dict[str, Any]:
+    async def _tool_executor(self, tool_invocation: ToolInvocation) -> dict[str, Any]:
         if not self._catalog_available:
             raise UserFacingToolError(
                 "The product catalog database is not available. "
                 "Please contact the administrator."
             )
 
-        question = (inv.planner_params.get("question") or "").strip()
-        if not question and not inv.sub_task:
+        question = (tool_invocation.planner_params.get("question") or "").strip()
+        if not question and not tool_invocation.sub_task:
             raise UserFacingToolError(
                 "No question was provided for the database query tool."
             )
 
-        sql_raw = await self._generate_sql(inv)
+        sql_raw = await self._generate_sql(tool_invocation)
         sql_safe = validate_sql(sql_raw)
         sql_final = ensure_limit(sql_safe, self._max_rows)
 

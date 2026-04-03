@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agent.memory_format import (
+from agent.memory_budget_formatter import (
     PLANNER_MEMORY_MAX_TOKENS,
     build_planner_context_block,
     build_responder_memory_block,

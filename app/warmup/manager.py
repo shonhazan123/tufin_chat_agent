@@ -8,8 +8,8 @@ import time
 
 import httpx
 
-from agent.llm import build_llm
-from agent.yaml_config import load_config
+from agent.config_loader import load_config
+from agent.llm_provider_factory import build_llm
 from app.warmup.status import ModelStatus, model_state
 
 logger = logging.getLogger(__name__)

@@ -10,19 +10,20 @@ Public API
 - ``count_tokens(text, model)``  — tiktoken plain-text counting (memory budgeting)
 - ``record_llm_call(role, response, *, messages, model)`` — single call-site entry point
 - ``reset_usage()`` / ``get_usage()`` — per-request contextvar lifecycle
-- ``InvocationUsage`` — accumulator dataclass (read by agent_runner)
+- ``InvocationUsage`` — accumulator dataclass (read by agent_runner); defined in ``agent.types.token_usage``
 """
 
 from __future__ import annotations
 
 import logging
 from contextvars import ContextVar
-from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Sequence
 
 import tiktoken
 from langchain_core.messages import BaseMessage, SystemMessage
+
+from agent.types.token_usage import InvocationUsage
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ def _message_overhead(model: str) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------
-# Public: plain-text token counting (used by memory_format)
+# Public: plain-text token counting (used by memory_budget_formatter)
 # ---------------------------------------------------------------------------
 
 def count_tokens(text: str, model: str = "gpt-4o-mini") -> int:
@@ -90,9 +91,9 @@ def _count_messages_split(
     Both include per-message framing overhead.  Assistant priming tokens
     are added to the input bucket.
     """
-    m = _safe_model(model)
-    enc = _get_encoding(m)
-    tpm, tpn = _message_overhead(m)
+    model_name = _safe_model(model)
+    encoding = _get_encoding(model_name)
+    tokens_per_message, tokens_per_name = _message_overhead(model_name)
     cached = 0
     dynamic = 0
 
@@ -105,15 +106,15 @@ def _count_messages_split(
         else:
             content = msg.get("content", "")
 
-        tokens = tpm + len(enc.encode(str(content)))
+        tokens = tokens_per_message + len(encoding.encode(str(content)))
         if isinstance(msg, BaseMessage):
-            tokens += len(enc.encode(msg.type))
+            tokens += len(encoding.encode(msg.type))
         else:
-            tokens += len(enc.encode(str(msg.get("role", ""))))
+            tokens += len(encoding.encode(str(msg.get("role", ""))))
 
         name = msg.get("name") if isinstance(msg, dict) else None
         if name:
-            tokens += tpn + len(enc.encode(str(name)))
+            tokens += tokens_per_name + len(encoding.encode(str(name)))
 
         if is_system:
             cached += tokens
@@ -159,26 +160,16 @@ def _extract_provider_usage(message: BaseMessage) -> dict[str, int | None]:
 # Per-invocation accumulator
 # ---------------------------------------------------------------------------
 
-_invocation_usage: ContextVar["InvocationUsage | None"] = ContextVar(
+_invocation_usage: ContextVar[InvocationUsage | None] = ContextVar(
     "invocation_usage", default=None,
 )
 
 
-@dataclass
-class InvocationUsage:
-    """Running totals and per-call log for one ``graph.ainvoke`` run."""
-
-    total_cached_tokens: int = 0
-    total_input_tokens: int = 0
-    total_output_tokens: int = 0
-    llm_calls: list[dict[str, Any]] = field(default_factory=list)
-
-
 def reset_usage() -> InvocationUsage:
     """Start a fresh accumulator (call once at graph entry)."""
-    u = InvocationUsage()
-    _invocation_usage.set(u)
-    return u
+    usage_accumulator = InvocationUsage()
+    _invocation_usage.set(usage_accumulator)
+    return usage_accumulator
 
 
 def get_usage() -> InvocationUsage | None:
@@ -201,63 +192,68 @@ def record_llm_call(
     Splits input into cached (SystemMessage) and input (HumanMessage) tokens.
     When the provider omits usage metadata, tiktoken estimates are used.
     """
-    u = get_usage()
-    if u is None:
+    usage_accumulator = get_usage()
+    if usage_accumulator is None:
         return
 
-    est_cached: int | None = None
-    est_input: int | None = None
+    estimated_cached_tokens: int | None = None
+    estimated_input_tokens: int | None = None
     if messages is not None and model is not None:
-        est_cached, est_input = _count_messages_split(messages, model)
+        estimated_cached_tokens, estimated_input_tokens = _count_messages_split(messages, model)
 
     provider = _extract_provider_usage(response)
-    provider_total_inp = provider.get("input_tokens")
-    provider_out = provider.get("output_tokens")
+    provider_total_input = provider.get("input_tokens")
+    provider_output = provider.get("output_tokens")
 
-    if est_cached is not None and est_input is not None:
-        est_total_inp = est_cached + est_input
-        if isinstance(provider_total_inp, int) and provider_total_inp >= 0:
-            if est_total_inp > 0:
-                drift = abs(provider_total_inp - est_total_inp) / est_total_inp
+    if estimated_cached_tokens is not None and estimated_input_tokens is not None:
+        estimated_total_input = estimated_cached_tokens + estimated_input_tokens
+        if isinstance(provider_total_input, int) and provider_total_input >= 0:
+            if estimated_total_input > 0:
+                drift = abs(provider_total_input - estimated_total_input) / estimated_total_input
                 if drift > _DRIFT_WARN_RATIO:
                     logger.warning(
                         "Token drift for %s: provider=%d, tiktoken=%d (%.0f%% off)",
-                        role, provider_total_inp, est_total_inp, drift * 100,
+                        role, provider_total_input, estimated_total_input, drift * 100,
                     )
-                ratio = provider_total_inp / est_total_inp
-                cached = int(est_cached * ratio)
-                inp = provider_total_inp - cached
+                ratio = provider_total_input / estimated_total_input
+                cached = int(estimated_cached_tokens * ratio)
+                input_token_count = provider_total_input - cached
             else:
                 cached = 0
-                inp = provider_total_inp
+                input_token_count = provider_total_input
         else:
-            cached = est_cached
-            inp = est_input
-            logger.debug("No provider input tokens for %s; using tiktoken cached=%d input=%d", role, cached, inp)
-    elif isinstance(provider_total_inp, int) and provider_total_inp >= 0:
+            cached = estimated_cached_tokens
+            input_token_count = estimated_input_tokens
+            logger.debug(
+                "No provider input tokens for %s; using tiktoken cached=%d input=%d",
+                role, cached, input_token_count,
+            )
+    elif isinstance(provider_total_input, int) and provider_total_input >= 0:
         cached = 0
-        inp = provider_total_inp
+        input_token_count = provider_total_input
     else:
         cached = 0
-        inp = 0
+        input_token_count = 0
 
-    out = provider_out if isinstance(provider_out, int) and provider_out >= 0 else 0
+    output_tokens = (
+        provider_output if isinstance(provider_output, int) and provider_output >= 0 else 0
+    )
 
-    u.total_cached_tokens += cached
-    u.total_input_tokens += inp
-    u.total_output_tokens += out
+    usage_accumulator.total_cached_tokens += cached
+    usage_accumulator.total_input_tokens += input_token_count
+    usage_accumulator.total_output_tokens += output_tokens
 
     logger.info(
         "%s LLM call: cached=%d, input=%d, output=%d",
-        role, cached, inp, out,
+        role, cached, input_token_count, output_tokens,
     )
 
     entry: dict[str, Any] = {
         "role": role,
         "usage": {
             "cached_tokens": cached,
-            "input_tokens": inp,
-            "output_tokens": out,
+            "input_tokens": input_token_count,
+            "output_tokens": output_tokens,
         },
     }
     if model:
@@ -278,4 +274,4 @@ def record_llm_call(
     if isinstance(output_text, str) and output_text.strip():
         entry["output_text"] = output_text.strip()
 
-    u.llm_calls.append(entry)
+    usage_accumulator.llm_calls.append(entry)

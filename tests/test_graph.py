@@ -50,7 +50,7 @@ def mock_llm_factory():
 def _ensure_calculator_mock():
     """Register tools and attach a mock LLM to the calculator agent (graph tests)."""
     from agent.tools import discover_tools
-    from agent.tools.base import registry
+    from agent.tools.tool_base_classes import registry
 
     discover_tools()
     calc = registry.get("calculator")
@@ -279,7 +279,7 @@ async def test_failure_flag_on_executor_error(mock_llm_factory):
 
 def test_prior_results_scoped_to_depends_on():
     """ToolInvocation.prior_results only returns results for depends_on ids."""
-    from agent.tools.base import ToolInvocation
+    from agent.types import ToolInvocation
 
     inv = ToolInvocation(
         state={"results": {"t1": {"result": 42}, "t2": {"result": 99}}},
@@ -291,7 +291,7 @@ def test_prior_results_scoped_to_depends_on():
 
 def test_prior_results_empty_when_no_depends():
     """ToolInvocation.prior_results is empty when depends_on is []."""
-    from agent.tools.base import ToolInvocation
+    from agent.types import ToolInvocation
 
     inv = ToolInvocation(
         state={"results": {"t1": {"result": 42}}},
@@ -302,7 +302,7 @@ def test_prior_results_empty_when_no_depends():
 
 def test_from_parts_with_depends_on():
     """from_parts accepts depends_on and scopes prior_results correctly."""
-    from agent.tools.base import ToolInvocation
+    from agent.types import ToolInvocation
 
     inv = ToolInvocation.from_parts(
         task="test",

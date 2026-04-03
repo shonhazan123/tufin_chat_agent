@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.tools.base import ToolInvocation, UserFacingToolError
+from agent.types import ToolInvocation, UserFacingToolError
 from agent.tools.database_query import (
     DatabaseQueryAgent,
     ensure_limit,
@@ -151,7 +151,7 @@ def db_agent(tmp_path: Path):
     db_file = tmp_path / "catalog.db"
     _seed_test_db(str(db_file))
 
-    with patch("agent.tools.base.build_llm") as mock_build:
+    with patch("agent.tools.tool_base_classes.build_llm") as mock_build:
         mock_llm = AsyncMock()
         mock_build.return_value = mock_llm
         agent = DatabaseQueryAgent()

@@ -1,6 +1,7 @@
 """Ordered startup sequence — enforces correct initialization order.
 
-Import order matters: yaml_config -> tools autodiscovery -> prompts -> llm -> tool_cache -> graph.
+Import order matters: config_loader -> tools autodiscovery -> llm_system_prompts ->
+llm_provider_factory -> tool_result_cache -> graph.
 
 Provider selection is fixed at process startup: set LLM_PROVIDER in .env to ``openai`` (default)
 or ``ollama``. See ``config/shared.yaml`` and ``config/openai.yaml`` / ``config/ollama.yaml``.
@@ -11,7 +12,7 @@ from __future__ import annotations
 import logging
 import os
 
-from agent.yaml_config import load_config
+from agent.config_loader import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +23,8 @@ _REQUIRED_ENV = {
 
 def validate_config() -> None:
     """Check provider value, required env vars, and agent configs."""
-    cfg = load_config()
-    provider = cfg.get("provider")
+    config = load_config()
+    provider = config.get("provider")
     if provider not in ("ollama", "openai"):
         raise ValueError(f"provider must be 'ollama' or 'openai', got '{provider}'")
 
@@ -32,7 +33,7 @@ def validate_config() -> None:
             raise EnvironmentError(f"Missing required env var for {provider}: {var}")
 
     required_agents = {"planner", "responder"}
-    configured = set(cfg.get("agents", {}).keys())
+    configured = set(config.get("agents", {}).keys())
     missing = required_agents - configured
     if missing:
         raise ValueError(f"Missing agent configs: {missing}")
@@ -45,7 +46,7 @@ async def startup() -> None:
 
     1. Validate configuration
     2. Discover and register all tools
-    3. Build PLANNER_SYSTEM prompt from populated registry
+    3. Build planner system prompt from populated registry
     4. Initialize LLM semaphore
     5. Initialize LLM response cache
     6. Compile the LangGraph execution graph
@@ -55,14 +56,14 @@ async def startup() -> None:
     from agent.tools import discover_tools
     discover_tools()
 
-    from agent.prompts import build_planner_prompt
+    from agent.llm_system_prompts import build_planner_prompt
     prompt = build_planner_prompt()
     logger.info("Planner prompt built (%d chars)", len(prompt))
 
-    from agent.llm import init_llm_semaphore
+    from agent.llm_provider_factory import init_llm_semaphore
     init_llm_semaphore()
 
-    from agent.tool_cache import init_llm_cache
+    from agent.tool_result_cache import init_llm_cache
     init_llm_cache()
 
     from agent.graph import build_graph

@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from agent.yaml_config import load_config
+from agent.config_loader import load_config
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +45,6 @@ def test_llm_provider_defaults_to_openai(monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "x")
     # load_config() calls load_dotenv(); repo .env may set LLM_PROVIDER — skip so default stays code-driven.
-    monkeypatch.setattr("agent.yaml_config.load_dotenv", lambda *_a, **_k: None)
+    monkeypatch.setattr("agent.config_loader.load_dotenv", lambda *_a, **_k: None)
     cfg = load_config()
     assert cfg["provider"] == "openai"
