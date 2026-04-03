@@ -2,6 +2,8 @@
 
 A **LangGraph-based multi-tool agent** fully customizable — select your LLM provider and model per tool, submit natural language tasks, and get structured answers with a full execution trace. The agent understands conversation context across turns and caches answers to preserve computational resources.
 
+**Tool execution:** Each tool runs as **pure functions** first whenever inputs are already clear. If parameters are missing or depend on earlier steps, the stack **falls back to a small LLM call** to extract or derive them. That keeps common paths fast and cheap and uses heavier LLM work only when necessary.
+
 ---
 
 ## Install Docker

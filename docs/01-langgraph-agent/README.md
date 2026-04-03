@@ -8,6 +8,8 @@ This component is the **brain** of the system. It receives a natural language ta
 
 The design is a **plan-and-execute** architecture (not ReAct) built on top of LangGraph's `StateGraph`.
 
+**Tool calls in the graph** are structured so execution starts with **deterministic, pure-function** work whenever the planner (or prior tool outputs) already supplies usable parameters. When something is missing, ambiguous, or must be inferred from context, the tool layer **falls back to an LLM** (the parameter specialist) to extract or shape inputs. That pattern speeds up the happy path, cuts token cost on straightforward steps, and reserves model calls for cases that actually need them.
+
 ---
 
 ## Pages
