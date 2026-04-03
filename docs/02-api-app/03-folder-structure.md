@@ -19,11 +19,14 @@ app/
 │                                   get_task_orchestration_service() (alias get_task_service)
 │
 ├── types/                       ← StrEnum “documentation types” for API string contracts
+│   ├── __init__.py              ← Re-exports health + reasoning enums
 │   ├── health_status_types.py   ← OverallHealthStatus · ComponentHealthStatus · ModelWarmupStatus
 │   └── reasoning_step_types.py  ← ReasoningNodeType · ReasoningStepStatus
 │
 ├── api/
+│   ├── __init__.py              ← HTTP API package marker
 │   └── routes/
+│       ├── __init__.py          ← Re-exports health_router, tasks_router for app.main
 │       ├── task_management_routes.py   ← POST /task · GET /tasks/{id} · GET /tasks/{id}/debug
 │       └── health_check_routes.py      ← GET /health · GET /health/model
 │
@@ -32,6 +35,7 @@ app/
 │   └── error_handler.py        ← Global exception handler → structured JSON errors
 │
 ├── services/
+│   ├── __init__.py              ← TaskOrchestrationService · HealthCheckService
 │   ├── task_orchestration_service.py  ← DB row lifecycle + Redis + agent_runner
 │   ├── health_check_service.py          ← SQLite / Redis / LangGraph health aggregation
 │   └── reasoning_tree_builder.py       ← observability_json → ReasoningStep[] (debug UI)
@@ -56,6 +60,7 @@ app/
 │   └── __init__.py              ← Re-exports warmup_model · ModelStatus · model_state
 │
 ├── schemas/
+│   ├── __init__.py              ← Re-exports public DTOs for `from app.schemas import …`
 │   ├── task_schemas.py          ← TaskRequest · TaskSubmitResponse · TaskDetailResponse
 │   │                               TaskDebugResponse · ReasoningStep
 │   └── health_check_schemas.py  ← HealthResponse · ModelStatusResponse

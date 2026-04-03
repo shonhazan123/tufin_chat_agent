@@ -44,6 +44,31 @@ flowchart TD
     Service --> SetCache
 ```
 
+`main.py` mounts both routers from `app/api/routes/__init__.py` under `settings.api_v1_prefix` (default `/api/v1`).
+
+---
+
+## Health checks (`GET /health`, `GET /health/model`)
+
+```mermaid
+flowchart TD
+    HR["health_check_routes.py"]
+    HC["HealthCheckService"]
+    H1["build_health_response()\nSQLite · Redis ping · get_graph + load_config"]
+    H2["build_model_warmup_status_response()\nmodel_state.snapshot()"]
+    HR --> HC
+    HC --> H1
+    HC --> H2
+```
+
+`HealthCheckService` builds `HealthResponse` (`app/schemas/health_check_schemas.py`) with status enums from `app/types/health_status_types.py`. The model warmup handler calls `build_model_warmup_status_response()`, which reads `app/warmup/status.py` and returns `ModelStatusResponse` (`ModelWarmupStatus`).
+
+---
+
+## Debug reasoning tree (`GET /tasks/{id}/debug`)
+
+`task_management_routes.py` loads the task row via `TaskOrchestrationService.get_task()` then calls `to_debug_response()`. That method uses `app/services/reasoning_tree_builder.py` (`build_reasoning_tree`) to turn persisted `observability_json` into a list of `ReasoningStep` DTOs (`app/schemas/task_schemas.py`) with `node_type` / `status` enums from `app/types/reasoning_step_types.py`.
+
 ---
 
 ## Task Repository States

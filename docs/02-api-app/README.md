@@ -7,10 +7,12 @@
 The `app/` layer wraps the LangGraph agent in a production-ready HTTP service.
 
 It is responsible for:
-- exposing stable REST endpoints
+- exposing stable REST endpoints via named route modules (`task_management_routes.py`, `health_check_routes.py`)
 - persisting every task with its full execution trace and observability payload
 - caching identical requests via Redis to avoid re-running the graph
 - running DB schema migrations automatically on startup
+- aggregating **health** probes (SQLite, optional Redis, LangGraph readiness) in `HealthCheckService`
+- documenting allowed **API string constants** as StrEnums under `app/types/` (health + reasoning-step statuses)
 
 ---
 

@@ -126,7 +126,9 @@ flowchart LR
 
 The cache key includes a `model_hint` so that the same task phrased for `gpt-4o` and `ollama` is cached separately.
 
-Redis is **optional** — if `REDIS_URL` is not set, the service falls through to the agent for every request. No code path breaks without it.
+Redis is **optional** for **serving traffic**: with `REDIS_OPTIONAL=true` (default), the API still starts if Redis is unreachable at startup, and each request runs as a cache miss. However, if `REDIS_URL` is **set** and Redis does not respond to ping, `GET /api/v1/health` still reports **`status: degraded`** (and `redis: error`) so operators and the Chat UI badge reflect a misconfigured or stopped cache.
+
+If you do not want Redis at all locally, leave `REDIS_URL` empty in `.env` — then Redis is **skipped** in health checks and does not contribute to degraded status.
 
 ---
 

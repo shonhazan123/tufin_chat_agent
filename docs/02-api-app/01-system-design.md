@@ -44,7 +44,11 @@ All routes are served under `/api/v1`.
 | `GET` | `/tasks/{id}` | Retrieve a past result. Returns the answer **plus full `observability`** blob (plan, results, trace, llm_calls, token totals). |
 | `GET` | `/tasks/{id}/debug` | Returns a structured `reasoning_tree` — planner step, executor waves with per-tool timing, responder step. Used by the debug sidebar in the UI. |
 | `GET` | `/health` | Reports SQLite, Redis, and agent graph status. Also shows active provider and model names per agent role. |
-| `GET` | `/health/model` | Ollama-specific warmup lifecycle: `not_started → downloading → warming_up → ready`. Returns `skipped` for OpenAI. |
+| `GET` | `/health/model` | Model warmup lifecycle: `not_started → downloading → warming_up → ready` (Ollama path). Returns `skipped` when warmup is not applicable (e.g. OpenAI). |
+
+**Implementation:** `app/api/routes/task_management_routes.py` and `app/api/routes/health_check_routes.py` delegate to `app/services/task_orchestration_service.py` (`TaskOrchestrationService`) and `app/services/health_check_service.py` (`HealthCheckService`) respectively — see [Code Design](02-code-design.md). JSON field values such as overall `status` (`ok` / `degraded`) and per-component `sqlite` / `redis` / `agent` (`ok` / `error` / `skipped`) are **StrEnum**s in `app/types/health_status_types.py` (serialized as strings in responses).
+
+Overall **`status` is `degraded`** when any of these hold: SQLite probe fails, LangGraph/config probe fails (`get_graph()` / `load_config()`), or Redis is configured (`REDIS_URL` non-empty) but the cache ping fails. The Chat UI maps `status !== "ok"` to a **Degraded** badge.
 
 > `POST /task` is intentionally **slim** — it returns only the answer and metrics. Full trace and debug data are always accessible via the GET endpoints using the returned `task_id`.
 
