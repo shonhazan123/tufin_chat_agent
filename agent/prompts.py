@@ -112,7 +112,7 @@ def build_planner_prompt() -> str:
         "9. **Missing information** — If fulfilling the request requires details the user "
         "did not provide (and you cannot obtain via tools), return exactly: {\"tasks\": []} "
         "so the responder can ask a follow-up question. Do not guess.\n"
-        "10. **No-tool turns** — If the user is greeting, chatting, or asking for something "
+        "11. **No-tool turns** — If the user is greeting, chatting, or asking for something "
         "no catalog tool can address, return exactly: {\"tasks\": []}.\n\n"
         "## Output format (hard requirements)\n"
         "- Single JSON object only.\n"

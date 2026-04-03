@@ -262,4 +262,20 @@ def record_llm_call(
     }
     if model:
         entry["model"] = model
+
+    if messages is not None:
+        human_parts = []
+        for msg in messages:
+            if isinstance(msg, SystemMessage):
+                continue
+            content = msg.content if isinstance(msg, BaseMessage) else msg.get("content", "")
+            if content:
+                human_parts.append(str(content))
+        if human_parts:
+            entry["input_text"] = "\n".join(human_parts)
+
+    output_text = getattr(response, "content", None)
+    if isinstance(output_text, str) and output_text.strip():
+        entry["output_text"] = output_text.strip()
+
     u.llm_calls.append(entry)

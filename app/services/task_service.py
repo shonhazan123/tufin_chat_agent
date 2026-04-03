@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -192,21 +193,33 @@ def _json_pretty(obj: Any) -> str:
     return json.dumps(obj, indent=2, default=str, ensure_ascii=False)
 
 
+@dataclass
+class _LLMCallInfo:
+    tokens: dict[str, int | None] | None = None
+    model: str | None = None
+    input_text: str | None = None
+    output_text: str | None = None
+
+
 def _pop_call_for_role(
     llm_calls: list[dict[str, Any]], role: str,
-) -> tuple[dict[str, int | None] | None, str | None]:
-    """Find and remove the first matching llm_call entry; return (tokens, model)."""
+) -> _LLMCallInfo:
+    """Find and remove the first matching llm_call entry."""
     for i, call in enumerate(llm_calls):
         if call.get("role") == role:
             u = call.get("usage") or {}
-            model = call.get("model")
             llm_calls.pop(i)
-            return {
-                "cached": u.get("cached_tokens"),
-                "input": u.get("input_tokens"),
-                "output": u.get("output_tokens"),
-            }, model
-    return None, None
+            return _LLMCallInfo(
+                tokens={
+                    "cached": u.get("cached_tokens"),
+                    "input": u.get("input_tokens"),
+                    "output": u.get("output_tokens"),
+                },
+                model=call.get("model"),
+                input_text=call.get("input_text"),
+                output_text=call.get("output_text"),
+            )
+    return _LLMCallInfo()
 
 
 def _build_planner_input(obs: dict[str, Any], task_text: str) -> str:
@@ -231,16 +244,25 @@ def _build_planner_input(obs: dict[str, Any], task_text: str) -> str:
     return "\n\n".join(sections)
 
 
-def _build_tool_input(plan_task: dict[str, Any]) -> str:
-    """Full structured input for a tool: sub_task, params, and dependency info."""
+def _build_tool_input(
+    plan_task: dict[str, Any],
+    tool_result: dict[str, Any] | None = None,
+    tool_llm: _LLMCallInfo | None = None,
+    extract_llm: _LLMCallInfo | None = None,
+) -> str:
+    """Full structured input for a tool, including LLM I/O for debugging.
+
+    Shows: sub_task, planner params, dependency info, and — when the tool LLM
+    was invoked — what it received as input and what it produced as output.
+    """
     sections: list[str] = []
     sub = plan_task.get("sub_task", "")
     if sub:
         sections.append(f"[Sub-task]\n{sub}")
 
-    params = plan_task.get("params")
-    if params:
-        sections.append(f"[Params]\n{_json_pretty(params)}")
+    planner_params = plan_task.get("params")
+    if planner_params:
+        sections.append(f"[Planner Params]\n{_json_pretty(planner_params)}")
 
     deps = plan_task.get("depends_on")
     if deps:
@@ -250,6 +272,20 @@ def _build_tool_input(plan_task: dict[str, Any]) -> str:
     tool_type = plan_task.get("type", "")
     if agent or tool_type:
         sections.append(f"[Tool]\nagent: {agent}  type: {tool_type}")
+
+    if tool_llm and tool_llm.input_text:
+        sections.append(f"[Tool LLM Input]\n{tool_llm.input_text}")
+    if tool_llm and tool_llm.output_text:
+        sections.append(f"[Tool LLM Output]\n{tool_llm.output_text}")
+
+    if extract_llm and extract_llm.input_text:
+        sections.append(f"[Extract LLM Input]\n{extract_llm.input_text}")
+    if extract_llm and extract_llm.output_text:
+        sections.append(f"[Extract LLM Output]\n{extract_llm.output_text}")
+
+    resolved = (tool_result or {}).get("_resolved_params")
+    if resolved:
+        sections.append(f"[Resolved Params]\n{_json_pretty(resolved)}")
 
     return "\n\n".join(sections) if sections else "(no input data)"
 
@@ -302,7 +338,7 @@ def _build_reasoning_tree(obs: dict[str, Any], task_text: str) -> list[Reasoning
 
     # --- 1. Planner step ---
     planner_ms = obs.get("planner_duration_ms")
-    planner_tokens, planner_model = _pop_call_for_role(llm_calls, "planner")
+    planner_info = _pop_call_for_role(llm_calls, "planner")
     planner_label = f"Planner ({planner_ms} ms)" if planner_ms is not None else "Planner"
 
     planner_input = _build_planner_input(obs, task_text)
@@ -313,9 +349,9 @@ def _build_reasoning_tree(obs: dict[str, Any], task_text: str) -> list[Reasoning
         label=planner_label,
         node_type="planner",
         status="ok" if not obs.get("error_context", "").startswith("Planner") else "error",
-        model=planner_model,
+        model=planner_info.model,
         duration_ms=planner_ms,
-        tokens=planner_tokens,
+        tokens=planner_info.tokens,
         input_summary=planner_input,
         output_summary=planner_output,
     ))
@@ -336,15 +372,17 @@ def _build_reasoning_tree(obs: dict[str, Any], task_text: str) -> list[Reasoning
                 tool_label = f"{agent_name} ({tool_ms} ms)" if tool_ms is not None else agent_name
                 tool_status = entry.get("status", "ok")
 
-                tool_tokens, tool_model = _pop_call_for_role(llm_calls, f"tool:{agent_name}")
-                if tool_tokens is None:
-                    tool_tokens, tool_model = _pop_call_for_role(llm_calls, agent_name)
+                tool_info = _pop_call_for_role(llm_calls, f"tool:{agent_name}")
+                if tool_info.tokens is None:
+                    tool_info = _pop_call_for_role(llm_calls, agent_name)
+
+                extra_info = _pop_call_for_role(llm_calls, f"tool:{agent_name}:extract")
 
                 plan_task = plan_by_id.get(tid, {})
-                tool_input = _build_tool_input(plan_task)
+                raw_result = entry.get("result") or results.get(tid) if tool_status == "ok" else None
+                tool_input = _build_tool_input(plan_task, raw_result, tool_info, extra_info)
 
                 if tool_status == "ok":
-                    raw_result = entry.get("result") or results.get(tid)
                     tool_output = _json_pretty(raw_result) if raw_result is not None else "(no result)"
                 else:
                     tool_output = entry.get("error", "(unknown error)")
@@ -354,9 +392,9 @@ def _build_reasoning_tree(obs: dict[str, Any], task_text: str) -> list[Reasoning
                     label=tool_label,
                     node_type="tool",
                     status=tool_status,
-                    model=tool_model,
+                    model=tool_info.model,
                     duration_ms=tool_ms,
-                    tokens=tool_tokens,
+                    tokens=tool_info.tokens,
                     input_summary=tool_input,
                     output_summary=tool_output,
                     wave=wave_num,
@@ -375,7 +413,7 @@ def _build_reasoning_tree(obs: dict[str, Any], task_text: str) -> list[Reasoning
 
     # --- 3. Responder step ---
     responder_ms = obs.get("responder_duration_ms")
-    responder_tokens, responder_model = _pop_call_for_role(llm_calls, "responder")
+    responder_info = _pop_call_for_role(llm_calls, "responder")
     responder_label = f"Responder ({responder_ms} ms)" if responder_ms is not None else "Responder"
     responder_input = _build_responder_input(obs)
     final_text = obs.get("response", "")
@@ -385,9 +423,9 @@ def _build_reasoning_tree(obs: dict[str, Any], task_text: str) -> list[Reasoning
         label=responder_label,
         node_type="responder",
         status="ok" if not obs.get("failure_flag") else "error",
-        model=responder_model,
+        model=responder_info.model,
         duration_ms=responder_ms,
-        tokens=responder_tokens,
+        tokens=responder_info.tokens,
         input_summary=responder_input,
         output_summary=final_text or None,
     ))
