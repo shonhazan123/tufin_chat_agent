@@ -25,6 +25,40 @@ from agent.yaml_config import load_config
 logger = logging.getLogger(__name__)
 
 
+async def prepare_responder_context_node(state: dict[str, Any]) -> dict[str, Any]:
+    """Graph node: label each tool result as FINAL ANSWER or INTERMEDIATE before the responder.
+
+    A task is "final" when no other task in the plan depends on it — its output
+    is the end product the user cares about. Intermediate tasks fed data into
+    downstream tools; their results provide background context only.
+    """
+    plan = state.get("plan") or []
+    results = state.get("results") or {}
+    if not results:
+        return {"responder_tool_context": "Tool results: (none — no tools were executed)"}
+
+    depended_on: set[str] = set()
+    for t in plan:
+        for dep in t.get("depends_on", []):
+            depended_on.add(dep)
+
+    task_meta = {t["id"]: t for t in plan}
+
+    sections: list[str] = []
+    for tid, res in results.items():
+        meta = task_meta.get(tid, {})
+        agent_name = meta.get("agent", "unknown")
+        sub_task = meta.get("sub_task", "")
+        role = "INTERMEDIATE (context only)" if tid in depended_on else "FINAL ANSWER"
+        header = f"[{tid}] {agent_name} — {role}"
+        if sub_task:
+            header += f"\n  Sub-task: {sub_task}"
+        body = json.dumps(res, indent=2, default=str)
+        sections.append(f"{header}\n{body}")
+
+    return {"responder_tool_context": "Tool results:\n\n" + "\n\n".join(sections)}
+
+
 async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
     """Invoke planner LLM to produce a JSON execution plan."""
     llm = build_llm("planner")
@@ -263,13 +297,9 @@ async def response_node(state: dict[str, Any]) -> dict[str, Any]:
         if resp_mem:
             parts.append(resp_mem)
         parts.append(
-            "Tool results (may be empty if the planner needed no tools):\n"
-            f"{json.dumps(state.get('results') or {}, indent=2, default=str)}"
+            state.get("responder_tool_context")
+            or "Tool results: (none — no tools were executed)"
         )
-        # parts.append(
-        #     "Execution trace:\n"
-        #     f"{json.dumps(state.get('trace') or [], indent=2, default=str)}"
-        # )
         content = "\n\n".join(parts)
 
     messages = [

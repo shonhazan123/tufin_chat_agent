@@ -16,7 +16,13 @@ The planner receives the current user task plus a conversation context summary. 
 
 The responder (see `RESPONDER_SYSTEM` in `agent/prompts.py`) acts as a personal assistant: it answers naturally when no tools ran, and synthesizes tool outputs into a friendly reply when they did. When the planner returned an empty plan due to missing details, the responder should ask a targeted clarifying question rather than guessing. It must not repeat the same computation or long arithmetic walkthrough when a tool already produced the final answer (unless the user asked for steps).
 
-The planner knows: tool names, purposes, output field names, tool types (`llm` vs `function`), and each tool’s input fields (see registry / planner prompt). Each LLM-typed tool calls its own `self.llm.ainvoke` **only when planner params are missing** what it needs — one shot, no retry loops in `BaseToolAgent`.
+The planner knows: tool names, purposes, output field names, tool types (`llm` vs `function`), and each tool’s input fields (see registry / planner prompt). For dependent tasks (`depends_on` is non-empty), the planner may leave params empty or provide best-effort values; the tool's parameter specialist LLM will extract concrete values from the upstream tool outputs.
+
+### Dependent Data Flow
+
+When a task lists `depends_on` ids, its `ToolInvocation.has_dependencies` is `True` and `prior_results` contains **only** those tasks' outputs (scoped, not all results). Any LLM tool with dependencies **always** invokes its parameter specialist LLM once, regardless of what the planner put in `params`. This is because prior tool outputs are non-deterministic (e.g. a web search summary) and must be semantically interpreted. The tool LLM receives `sub_task`, `user_msg`, `context_summary`, and the scoped `prior_results`, and extracts concrete typed params (e.g. a numeric `value` from a web search summary). For independent tasks (`depends_on: []`), the tool only invokes its LLM when planner params fail type validation. This keeps the executor simple (no placeholder parsing) while enabling reliable chaining across tools with different output formats.
+
+Each LLM-typed tool calls its own `self.llm.ainvoke` when planner params are missing or fail type validation — one shot, no retry loops in `BaseToolAgent`.
 
 ### Tier 2 — Tool Agents (Domain Specialists)
 
@@ -24,7 +30,7 @@ Two subtypes:
 
 **LLM Tools** (`type: "llm"`) — weather, web_search, calculator, unit_converter:
 - Have their own LLM instance (`build_llm` per tool name in `BaseToolAgent.__init__`)
-- `BaseToolAgent.run(state, plan_task)` builds **`ToolInvocation`** and calls **`_tool_executor(inv)`** once. Each tool calls **`self.llm.ainvoke`** only when params from the planner are **missing** (single call; no parse-retry loops in the base class)
+- `BaseToolAgent.run(state, plan_task)` builds **`ToolInvocation`** and calls **`_tool_executor(inv)`** once. For dependent tasks (`has_dependencies` is true), the tool **always** invokes `self.llm.ainvoke` to extract params from prior results. For independent tasks, it only invokes the LLM when planner params fail type validation. Single call; no parse-retry loops in the base class
 - Use `get_llm_semaphore()` around tool LLM calls; release before HTTP/eval/conversion work
 
 **Function Tools** (`type: "function"`) — optional pattern for tools with no extraction step:
@@ -39,9 +45,16 @@ START → planner_node → executor_node ←────────────
                              ▼                           │
                        route_after_executor              │
                         ├── tasks_remain ───────────────►│ (loop)
-                        ├── error → mark_failure_node → response_node (failure; no re-plan)
-                        └── all_done → response_node → END
+                        ├── error → mark_failure_node ──►┐
+                        └── all_done ──────────────────►─┤
+                                                         ▼
+                                            prepare_responder_context_node
+                                                         │
+                                                         ▼
+                                                   response_node → END
 ```
+
+The `prepare_responder_context_node` labels each tool result as **FINAL ANSWER** (no downstream task depends on it) or **INTERMEDIATE** (its output was consumed by another tool). The responder uses these labels to know which numbers to present vs. treat as background context.
 
 An **empty plan** (`tasks: []`) skips tool execution: `executor_node` returns immediately and `route_after_executor` routes to `response_node` (same as when every task has finished).
 

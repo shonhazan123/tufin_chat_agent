@@ -49,20 +49,37 @@ SPEC = ToolSpec(
         "2. **Allowed syntax** — expression must obey the permitted grammar.\n"
         "3. **User intent** — infer the intended expression from context.\n\n"
         "## When you run\n"
-        "The planner normally fills `params.expression`. **You are invoked only when that "
-        "value is missing or unusable.** Then infer the expression from: the user request, "
-        "`context_summary`, `sub_task`, and prior tool results (given in the user message).\n\n"
+        "The planner normally fills `params.expression`. **You are invoked when that "
+        "value is missing, unusable, or needs to be built from a prior tool's output.** "
+        "Infer the expression from: the user request, `context_summary`, `sub_task`, and "
+        "prior tool results (given in the user message).\n\n"
+        "## Disambiguation (critical)\n"
+        "Prior tool results often contain **multiple conflicting values**. You MUST:\n"
+        "1. Read the **user request** carefully to identify the intended entities.\n"
+        "2. **Count sources** — prefer the consensus/majority value. An outlier among "
+        "otherwise consistent results is likely for a different entity.\n"
+        "3. **Check context clues** — names, codes, country references — to verify "
+        "which value matches the user's actual question.\n"
+        "4. **Never pick the first result blindly** — scan all results and choose the one "
+        "matching the user's intent.\n"
+        "5. When building the expression from a prior tool's structured output (e.g. "
+        "unit_converter `result`), use that exact numeric field directly.\n\n"
         "## Output contract\n"
         "Return **only** this JSON shape (no markdown, no prose):\n"
         '  {"expression": "<single mathematical expression>"}\n\n'
         "## Expression rules\n"
-        "1. **Allowed syntax** — Numbers; binary ops `+`, `-`, `*`, `/`; `**` or `^` for "
-        "powers (both mean exponentiation; `^` is **not** bitwise XOR); parentheses.\n"
+        "1. **Allowed syntax** — Numbers (int/float); binary ops `+`, `-`, `*`, `/`; "
+        "`**` or `^` for powers (both mean exponentiation; `^` is **not** bitwise XOR); "
+        "parentheses.\n"
         "2. **Functions** — `sqrt`, `cbrt`, `abs`, `round`, `sin`, `cos`, `tan`, `log`, "
         "`log10`, `ceil`, `floor`.\n"
         "3. **Constants** — `pi`, `e` as identifiers.\n"
         "4. **Single expression** — One evaluable expression string, not multiple "
-        "statements.\n\n"
+        "statements.\n"
+        "5. **Concrete numbers only** — The expression must contain actual numeric "
+        "values, not variable names or placeholders. If prior tool results contain "
+        "a number, extract it and put it directly in the expression "
+        "(e.g. `5570.0 / 900` not `distance / speed`).\n\n"
         "## Format\n"
         "Raw JSON object only — no code fences, no explanation.\n"
     ),
@@ -123,16 +140,6 @@ def _expression_params_valid(params: dict[str, Any]) -> bool:
     exp = params.get("expression")
     return isinstance(exp, str) and bool(str(exp).strip())
 
-
-def _expression_missing(params: dict[str, Any], planner_was_empty: bool) -> bool:
-    if planner_was_empty:
-        return True
-    exp = params.get("expression")
-    if exp is None:
-        return True
-    if isinstance(exp, str) and not str(exp).strip():
-        return True
-    return False
 
 
 def _safe_eval_node(node: ast.AST) -> float:
@@ -272,22 +279,22 @@ class CalculatorAgent(BaseToolAgent):
         return parsed
 
     async def _tool_executor(self, inv: ToolInvocation) -> dict[str, Any]:
-        planner_empty = not inv.planner_params
         params = dict(inv.planner_params)
+        used_llm = False
 
-        if _expression_missing(params, planner_empty):
+        if inv.has_dependencies or not _expression_params_valid(params):
             params = await self._llm_json_params_once(inv)
-        elif not _expression_params_valid(params):
-            raise ToolParamValidationError(
-                "calculator: 'expression' must be a non-empty string"
-            )
+            used_llm = True
 
         if not _expression_params_valid(params):
             raise ToolParamValidationError(
                 "calculator: tool LLM did not return a valid expression"
             )
 
-        return await self._eval_expression(params)
+        result = await self._eval_expression(params)
+        if used_llm:
+            result["_resolved_params"] = params
+        return result
 
     async def _eval_expression(self, params: dict[str, Any]) -> dict[str, Any]:
         expression = str(params.get("expression", "")).strip()

@@ -25,6 +25,8 @@ def strip_json_fence(text: str) -> str:
     t = text.strip()
     if t.startswith("```"):
         t = t.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    elif t.endswith("```"):
+        t = t[: t.rfind("```")].strip()
     return t
 
 
@@ -57,8 +59,20 @@ class ToolInvocation:
 
     @property
     def prior_results(self) -> dict[str, Any]:
-        pr = self.state.get("results")
-        return dict(pr) if isinstance(pr, dict) else {}
+        """Results scoped to ``depends_on`` task ids only (tight context for tool LLM)."""
+        all_results = self.state.get("results")
+        if not isinstance(all_results, dict):
+            return {}
+        deps = self.plan_task.get("depends_on") or []
+        if not deps:
+            return {}
+        return {k: v for k, v in all_results.items() if k in deps}
+
+    @property
+    def has_dependencies(self) -> bool:
+        """True when this task depends on prior tool outputs (always needs LLM extraction)."""
+        deps = self.plan_task.get("depends_on") or []
+        return bool(deps)
 
     @property
     def context_summary(self) -> str:
@@ -79,9 +93,15 @@ class ToolInvocation:
 
     @classmethod
     def from_parts(
-        cls,*,task: str = "", sub_task: str = "",prior_results: dict[str, Any] | None = None,
-        planner_params: dict[str, Any] | None = None,context_summary: str = "",) -> ToolInvocation:
-        
+        cls,
+        *,
+        task: str = "",
+        sub_task: str = "",
+        prior_results: dict[str, Any] | None = None,
+        depends_on: list[str] | None = None,
+        planner_params: dict[str, Any] | None = None,
+        context_summary: str = "",
+    ) -> ToolInvocation:
         """Minimal state + task row (tests and callers without a full graph)."""
         st: dict[str, Any] = {
             "task": task,
@@ -91,6 +111,7 @@ class ToolInvocation:
         pt: dict[str, Any] = {
             "sub_task": sub_task,
             "params": dict(planner_params) if planner_params is not None else {},
+            "depends_on": list(depends_on) if depends_on else [],
         }
         return cls(state=st, plan_task=pt)
 

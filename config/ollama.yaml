@@ -27,7 +27,7 @@ agents:
     max_tokens: 256
     temperature: 0
     max_retries: 3
-    num_ctx: 2048
+    num_ctx: 4096
   web_search:
     model: qwen2.5:7b-instruct-q4_K_M
     max_tokens: 512
@@ -39,13 +39,13 @@ agents:
     max_tokens: 256
     temperature: 0
     max_retries: 3
-    num_ctx: 2048
+    num_ctx: 4096
   unit_converter:
     model: qwen2.5:7b-instruct-q4_K_M
     max_tokens: 256
     temperature: 0
     max_retries: 3
-    num_ctx: 2048
+    num_ctx: 4096
   database_query:
     model: qwen2.5:7b-instruct-q4_K_M
     max_tokens: 512

@@ -8,6 +8,7 @@ from agent.graph_nodes import (
     executor_node,
     mark_failure_node,
     planner_node,
+    prepare_responder_context_node,
     response_node,
     route_after_executor,
 )
@@ -22,14 +23,15 @@ def build_graph():
     Graph topology:
         START -> planner -> executor -> [route_after_executor]
             "continue" -> executor   (next wave of parallel tasks)
-            "fail"     -> mark_failure -> responder  (tool/planner errors; no re-plan loop)
-            "done"     -> responder -> END  (includes empty plan: no tools, straight to responder)
+            "fail"     -> mark_failure -> prepare_context -> responder -> END
+            "done"     -> prepare_context -> responder -> END
     """
     graph = StateGraph(AgentState)
 
     graph.add_node("planner", planner_node)
     graph.add_node("executor", executor_node)
     graph.add_node("mark_failure", mark_failure_node)
+    graph.add_node("prepare_context", prepare_responder_context_node)
     graph.add_node("responder", response_node)
 
     graph.add_edge(START, "planner")
@@ -41,11 +43,12 @@ def build_graph():
         {
             "continue": "executor",
             "fail": "mark_failure",
-            "done": "responder",
+            "done": "prepare_context",
         },
     )
 
-    graph.add_edge("mark_failure", "responder")
+    graph.add_edge("mark_failure", "prepare_context")
+    graph.add_edge("prepare_context", "responder")
     graph.add_edge("responder", END)
 
     global _compiled

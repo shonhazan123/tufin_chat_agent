@@ -48,17 +48,33 @@ SPEC = ToolSpec(
         "2. **Schema validity** — include `value`, `from_unit`, `to_unit` in correct types.\n"
         "3. **User intent** — infer the most likely units/value from context.\n\n"
         "## When you run\n"
-        "The planner should supply `params`. **You are invoked when fields are missing or "
-        "invalid.** Infer from: the user request, `context_summary`, `sub_task`, and "
-        "prior tool results.\n\n"
+        "The planner should supply `params`. **You are invoked when fields are missing, "
+        "invalid, or need to be extracted from a prior tool's output.** Infer from: the "
+        "user request, `context_summary`, `sub_task`, and prior tool results.\n\n"
+        "## Disambiguation (critical)\n"
+        "Prior tool results often contain **multiple conflicting values**. You MUST:\n"
+        "1. Read the **user request** carefully to identify the intended entities "
+        "(e.g. 'London' without qualifier almost always means London, England/UK).\n"
+        "2. **Count sources** — if 4 out of 5 results say ~3,450-3,470 miles and 1 says "
+        "403 miles, the outlier is for a different entity. Use the consensus value.\n"
+        "3. **Check context clues** — airport codes (LHR = London Heathrow), country names, "
+        "coordinates — to verify which result matches the user's intent.\n"
+        "4. **Never pick the first result blindly** — scan all results and choose the one "
+        "matching the user's actual question.\n\n"
         "## Output contract\n"
         "Return **only**:\n"
         '  {"value": <number>, "from_unit": "<string>", "to_unit": "<string>"}\n\n'
         "## Rules\n"
-        "1. **value** — Numeric magnitude to convert (float).\n"
-        "2. **Units** — Use conventional short symbols (e.g. km, lb, °C implied via unit "
-        "names the backend accepts).\n"
-        "3. **Currency** — ISO 4217 three-letter codes (USD, EUR, …).\n\n"
+        "1. **value** — Must be a **number** (int or float). Extract the numeric value "
+        "from prior tool results or the user request. Never put text or sentences here.\n"
+        "2. **Units** — Use **only** the short symbols the backend accepts:\n"
+        "   - Length: km, miles, m, ft, cm, inches\n"
+        "   - Weight: kg, lb, g, oz\n"
+        "   - Temperature: celsius, fahrenheit, kelvin (or C, F, K)\n"
+        "   - Currency: USD, EUR, GBP, JPY, CAD, AUD, CHF, CNY, INR, BRL, "
+        "MXN, KRW, SEK, NOK, DKK, NZD, SGD, HKD, TRY, ILS\n"
+        "3. **No other unit names** — Do not use full words like 'kilometers' or "
+        "'pounds'; use the short forms above.\n\n"
         "## Format\n"
         "Raw JSON only — no markdown fences, no commentary.\n"
     ),
@@ -204,17 +220,22 @@ class UnitConverterAgent(BaseToolAgent):
         return parsed
 
     async def _tool_executor(self, inv: ToolInvocation) -> dict[str, Any]:
-        if not inv.planner_params:
+        params = dict(inv.planner_params)
+        used_llm = False
+
+        if inv.has_dependencies or not _uc_params_valid(params):
             params = await self._llm_json_params_once(inv)
-        else:
-            params = dict(inv.planner_params)
+            used_llm = True
 
         if not _uc_params_valid(params):
             raise ToolParamValidationError(
                 "unit_converter: missing or invalid value/from_unit/to_unit"
             )
 
-        return await self._convert_backend(params)
+        result = await self._convert_backend(params)
+        if used_llm:
+            result["_resolved_params"] = params
+        return result
 
     async def _convert_backend(self, params: dict[str, Any]) -> dict[str, Any]:
         value = float(params["value"])

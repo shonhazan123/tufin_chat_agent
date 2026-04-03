@@ -95,7 +95,7 @@ User Request
 
 **What it does:** Defines the fixed system prompts used as `SystemMessage` content. Each prompt uses Markdown-style **section headings** (Role, Objective or output contract, rules, format) so model behavior and human review stay aligned.
 
-- **Planner prompt** — Built lazily from the tool registry. Tells the planner LLM what tools exist, each tool’s input/output field names, and that every task must include structured `params` matching those schemas (plus `sub_task` for LLM-typed tools). The executor tries planner `params` before invoking each tool’s specialist LLM.
+- **Planner prompt** — Built lazily from the tool registry. Tells the planner LLM what tools exist, each tool’s input/output field names, and that independent tasks must include structured `params` matching those schemas (plus `sub_task` for LLM-typed tools). For dependent tasks, the planner may leave params empty or best-effort and must write a clear `sub_task`; the tool’s param specialist LLM extracts concrete values from scoped `prior_results`.
   - Includes a **"Conversational context awareness"** section that instructs the planner to: (a) resolve follow-up pronouns/references (e.g. "it", "from it") using conversation memory, (b) prefer the same tool(s) used in the previous turn when the follow-up continues the same topic, (c) embed the resolved entity directly in `params`/`sub_task` instead of relying on pronouns.
 - **Responder prompt** — Instructions for synthesizing tool results into a natural language answer (grounding, no double computation when tools already returned a final value, failure tone).
 - **Summarizer prompt** — Strict JSON output: rolling `summary` plus merged `user_key_facts` (stable user attributes). Background refresh after each assistant reply.
@@ -138,7 +138,7 @@ The three core node functions plus routing logic:
 **`mark_failure_node`** — Sets `failure_flag = True` before routing to response.
 
 **`response_node`** — The "voice" of the agent.
-- Takes all accumulated results and the execution trace
+- Receives tool results labeled as FINAL ANSWER or INTERMEDIATE (context only) based on the plan DAG
 - Calls the responder LLM to synthesize a clear answer (see `RESPONDER_SYSTEM` in `agent/prompts.py`). When tools already returned a final value (e.g. calculator `result`), the responder must state it in the user's language without redoing step-by-step work unless the user asked for a derivation.
 - On failure: logs internal error details, then asks the responder for a user-safe apology (no technical leakage), or a plain-language explanation when `user_facing_error` is set
 
@@ -149,8 +149,8 @@ The three core node functions plus routing logic:
 ```
 START → planner → executor → [route_after_executor]
                                   ├── "continue" → executor (next wave)
-                                  ├── "fail"     → mark_failure → responder
-                                  └── "done"     → responder → END
+                                  ├── "fail"     → mark_failure → prepare_context → responder
+                                  └── "done"     → prepare_context → responder → END
 ```
 
 ### `agent/tools/base.py` — Tool Framework
@@ -158,8 +158,8 @@ START → planner → executor → [route_after_executor]
 **What it does:** Provides the base classes and registry for all tools:
 
 - **`ToolSpec`** — Declarative metadata (name, type, purpose, schemas, TTL)
-- **`ToolInvocation`** — frozen bundle: graph `state` + plan task row; properties for `user_msg`, `sub_task`, `prior_results`, `planner_params`, `context_summary`
-- **`BaseToolAgent`** — `run(state, plan_task)` builds **`ToolInvocation`** and delegates to **`_tool_executor(inv)`**; each tool invokes **`self.llm`** only when planner params are **missing** (no retry loops in `base.py`)
+- **`ToolInvocation`** — frozen bundle: graph `state` + plan task row; properties for `user_msg`, `sub_task`, `prior_results` (scoped to `depends_on` task ids only), `planner_params`, `context_summary`
+- **`BaseToolAgent`** — `run(state, plan_task)` builds **`ToolInvocation`** and delegates to **`_tool_executor(inv)`**; each tool validates planner params first, and invokes **`self.llm`** when params are **missing or fail type validation** (single call; no retry loops in `base.py`)
 - **`BaseFunctionTool`** — Pure functions: planner provides structured params directly
 - **`AgentRegistry`** — Singleton registry populated by `@register` decorators at import time
 
@@ -178,14 +178,18 @@ START → planner → executor → [route_after_executor]
 ### LLM Tools (weather, web_search, calculator, unit_converter, database_query)
 
 ```
-planner sets sub_task + params (structured JSON per tool input_schema)
+planner sets sub_task + params (structured JSON per tool input_schema;
+    params may be empty/partial for dependent tasks)
     │
     ▼
 executor calls agent.run(state, plan_task)
     │
     ▼
-subclass _tool_executor(inv) — tool-specific: optional single self.llm.ainvoke if params missing,
-    then backend
+subclass _tool_executor(inv):
+    1. If has_dependencies (depends_on non-empty) → always invoke self.llm with scoped prior_results
+       If no dependencies → validate planner params; invoke self.llm only if invalid
+    2. Validate LLM/planner output; raise on failure
+    3. Run deterministic backend
     │
     ├── Acquire LLM semaphore around that tool LLM call
     └── Backend: HTTP API, safe eval, conversion, or SQL execution

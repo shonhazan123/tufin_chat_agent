@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from agent.tokens import count_tokens
 
-PLANNER_MEMORY_MAX_TOKENS = 300
+PLANNER_MEMORY_MAX_TOKENS = 500
 
-RESPONDER_MEMORY_MAX_TOKENS = 120
+RESPONDER_MEMORY_MAX_TOKENS = 200
 
 
 def estimate_tokens(text: str) -> int:

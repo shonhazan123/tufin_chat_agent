@@ -164,13 +164,16 @@ async def test_sequential_dependency(mock_llm_factory):
 
     state = _graph_state(task="chain", plan=plan)
 
-    _ensure_calculator_mock()
+    calc_llm = _ensure_calculator_mock()
 
     wave1 = await executor_node(state)
     assert "t1" in wave1["results"]
     assert "t2" not in wave1["results"]
 
     state["results"] = wave1["results"]
+    calc_llm.ainvoke = AsyncMock(
+        return_value=_mock_llm_response('{"expression": "15*2"}')
+    )
     wave2 = await executor_node(state)
     assert "t2" in wave2["results"]
     assert wave2["results"]["t2"]["result"] == 30.0
@@ -268,3 +271,157 @@ async def test_failure_flag_on_executor_error(mock_llm_factory):
 
     fail_out = await mark_failure_node(state)
     assert fail_out["failure_flag"] is True
+
+
+# ---------------------------------------------------------------------------
+# Dependent task param resolution tests
+# ---------------------------------------------------------------------------
+
+def test_prior_results_scoped_to_depends_on():
+    """ToolInvocation.prior_results only returns results for depends_on ids."""
+    from agent.tools.base import ToolInvocation
+
+    inv = ToolInvocation(
+        state={"results": {"t1": {"result": 42}, "t2": {"result": 99}}},
+        plan_task={"depends_on": ["t1"], "params": {}},
+    )
+    assert inv.prior_results == {"t1": {"result": 42}}
+    assert "t2" not in inv.prior_results
+
+
+def test_prior_results_empty_when_no_depends():
+    """ToolInvocation.prior_results is empty when depends_on is []."""
+    from agent.tools.base import ToolInvocation
+
+    inv = ToolInvocation(
+        state={"results": {"t1": {"result": 42}}},
+        plan_task={"depends_on": [], "params": {}},
+    )
+    assert inv.prior_results == {}
+
+
+def test_from_parts_with_depends_on():
+    """from_parts accepts depends_on and scopes prior_results correctly."""
+    from agent.tools.base import ToolInvocation
+
+    inv = ToolInvocation.from_parts(
+        task="test",
+        sub_task="use t1 output",
+        prior_results={"t1": {"result": 10}, "t2": {"result": 20}},
+        depends_on=["t1"],
+        planner_params={"value": "placeholder"},
+    )
+    assert inv.prior_results == {"t1": {"result": 10}}
+    assert inv.planner_params == {"value": "placeholder"}
+
+
+@pytest.mark.asyncio
+async def test_dependent_task_invalid_params_triggers_tool_llm(mock_llm_factory):
+    """When t2 depends on t1 and has invalid params, the tool LLM is invoked to extract them."""
+    from agent.graph_nodes import executor_node
+
+    plan = [
+        {
+            "id": "t1",
+            "agent": "calculator",
+            "type": "llm",
+            "sub_task": "Compute 10+5",
+            "params": {"expression": "10+5"},
+            "depends_on": [],
+        },
+        {
+            "id": "t2",
+            "agent": "calculator",
+            "type": "llm",
+            "sub_task": "Multiply previous result by 3",
+            "params": {},
+            "depends_on": ["t1"],
+        },
+    ]
+
+    state = _graph_state(task="chain computation", plan=plan)
+
+    calc_llm = _ensure_calculator_mock()
+
+    wave1 = await executor_node(state)
+    assert "t1" in wave1["results"]
+    assert wave1["results"]["t1"]["result"] == 15.0
+
+    state["results"] = wave1["results"]
+    calc_llm.ainvoke = AsyncMock(
+        return_value=_mock_llm_response('{"expression": "15 * 3"}')
+    )
+
+    wave2 = await executor_node(state)
+    assert "t2" in wave2["results"]
+    assert wave2["results"]["t2"]["result"] == 45.0
+    calc_llm.ainvoke.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_dependent_task_always_calls_tool_llm(mock_llm_factory):
+    """When t2 depends on t1, the tool LLM is ALWAYS invoked to extract params from prior results."""
+    from agent.graph_nodes import executor_node
+
+    plan = [
+        {
+            "id": "t1",
+            "agent": "calculator",
+            "type": "llm",
+            "sub_task": "Compute 5+5",
+            "params": {"expression": "5+5"},
+            "depends_on": [],
+        },
+        {
+            "id": "t2",
+            "agent": "calculator",
+            "type": "llm",
+            "sub_task": "Multiply by 2",
+            "params": {"expression": "10 * 2"},
+            "depends_on": ["t1"],
+        },
+    ]
+
+    state = _graph_state(task="chain with valid params", plan=plan)
+
+    calc_llm = _ensure_calculator_mock()
+
+    wave1 = await executor_node(state)
+    assert "t1" in wave1["results"]
+
+    state["results"] = wave1["results"]
+    calc_llm.ainvoke = AsyncMock(
+        return_value=_mock_llm_response('{"expression": "10 * 2"}')
+    )
+
+    wave2 = await executor_node(state)
+    assert "t2" in wave2["results"]
+    assert wave2["results"]["t2"]["result"] == 20.0
+    calc_llm.ainvoke.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_independent_task_valid_params_skips_tool_llm(mock_llm_factory):
+    """When a task has no dependencies and valid params, the tool LLM is NOT invoked."""
+    from agent.graph_nodes import executor_node
+
+    plan = [
+        {
+            "id": "t1",
+            "agent": "calculator",
+            "type": "llm",
+            "sub_task": "Compute 10 * 2",
+            "params": {"expression": "10 * 2"},
+            "depends_on": [],
+        },
+    ]
+
+    state = _graph_state(task="simple calc", plan=plan)
+
+    calc_llm = _ensure_calculator_mock()
+    calc_llm.ainvoke = AsyncMock()
+
+    out = await executor_node(state)
+    assert "t1" in out["results"]
+    assert out["results"]["t1"]["result"] == 20.0
+    calc_llm.ainvoke.assert_not_called()

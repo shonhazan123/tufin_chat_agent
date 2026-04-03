@@ -23,8 +23,8 @@ SPEC = ToolSpec(
     purpose="Search the web for current information and return a summary of results.",
     output_schema={
         "query": str,
-        "results": list,
-        "summary": str,
+        "answer": str,
+        "sources": list,
     },
     input_schema={
         "query": "str — concise search query string",
@@ -38,8 +38,9 @@ SPEC = ToolSpec(
         "2. **Query quality** — concise, specific, and relevant.\n"
         "3. **User intent** — capture the user's actual information need.\n\n"
         "## When you run\n"
-        "If the planner omitted or left empty `params.query`, **infer** a focused query "
-        "from: the user request, `context_summary`, `sub_task`, and prior tool results.\n\n"
+        "If the planner omitted or left empty `params.query`, or this task depends on "
+        "prior tools, **infer** a focused query from: the user request, `context_summary`, "
+        "`sub_task`, and prior tool results.\n\n"
         "## Output contract\n"
         "Return **only**:\n"
         '  {"query": "<concise search query>"}\n\n'
@@ -52,7 +53,55 @@ SPEC = ToolSpec(
     default_ttl_seconds=600,
 )
 
+EXTRACT_SYSTEM = (
+    "## Role\n"
+    "You are a **search result analyst**. Given raw web search results and the user's "
+    "question, you extract the **single most relevant answer**.\n\n"
+    "## Priority order\n"
+    "1. **Accuracy** — only state facts supported by the search results.\n"
+    "2. **Relevance** — answer exactly what the user asked, nothing more.\n"
+    "3. **Disambiguation** — if results contain conflicting data (e.g. distances to "
+    "different cities with the same name), identify which matches the user's intent "
+    "by checking context clues (country, airport codes, coordinates). Prefer the "
+    "consensus/majority value. Ignore outliers for wrong entities.\n"
+    "4. **Conciseness** — keep the answer short and factual.\n\n"
+    "## Output contract\n"
+    "Return **only** a JSON object:\n"
+    '  {"answer": "<concise factual answer with key numbers/facts>"}\n\n'
+    "## Rules\n"
+    "1. Include the specific **numbers, units, and facts** the user asked for.\n"
+    "2. If the user asked for a numeric value, state it clearly "
+    "(e.g. 'The distance is approximately 3,459 miles (5,567 km).').\n"
+    "3. Do NOT include raw URLs, HTML, or metadata.\n"
+    "4. If no relevant answer can be found, say so.\n\n"
+    "## Format\n"
+    "Raw JSON only — no markdown fences, no commentary.\n"
+)
+
 WEB_SEARCH_SYSTEM = SPEC.system_prompt
+
+
+def _parse_answer(raw_content: str) -> str:
+    """Extract the plain-text answer from the extraction LLM response.
+
+    Handles: bare JSON, fenced JSON, double-encoded JSON, or plain text fallback.
+    """
+    text = strip_json_fence(raw_content).strip()
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            val = parsed.get("answer", text)
+            if isinstance(val, str):
+                try:
+                    inner = json.loads(val)
+                    if isinstance(inner, dict) and "answer" in inner:
+                        return str(inner["answer"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                return val
+        return text
+    except json.JSONDecodeError:
+        return text
 
 
 def _query_params_valid(params: dict[str, Any]) -> bool:
@@ -100,22 +149,18 @@ class WebSearchAgent(BaseToolAgent):
         return parsed
 
     async def _tool_executor(self, inv: ToolInvocation) -> dict[str, Any]:
-        pp = inv.planner_params
+        params = dict(inv.planner_params)
 
-        if "query" in pp and not str(pp.get("query", "")).strip():
-            return {"query": "", "results": [], "summary": "No query provided."}
-
-        if not pp or "query" not in pp:
+        if inv.has_dependencies or not _query_params_valid(params):
             params = await self._llm_json_params_once(inv)
-        else:
-            params = dict(pp)
 
         if not _query_params_valid(params):
-            return {"query": "", "results": [], "summary": "No query provided."}
+            return {"query": "", "answer": "No query provided.", "sources": []}
 
-        return await self._search_tavily(params)
+        raw = await self._fetch_results(params)
+        return await self._extract_answer(inv, params, raw)
 
-    async def _search_tavily(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _fetch_results(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         query = str(params.get("query", "")).strip()
 
         from langchain_community.utilities.tavily_search import TavilySearchAPIWrapper
@@ -130,12 +175,44 @@ class WebSearchAgent(BaseToolAgent):
                 "url": r.get("url", ""),
                 "content": r.get("content", "")[:500],
             })
+        return results
 
-        summary_parts = [r.get("content", "")[:200] for r in raw_results[:3]]
-        summary = " | ".join(summary_parts) if summary_parts else "No results found."
+    async def _extract_answer(
+        self,
+        inv: ToolInvocation,
+        params: dict[str, Any],
+        raw_results: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """LLM reasoning step: read raw search results and extract the relevant answer."""
+        query = str(params.get("query", "")).strip()
+        sources = [{"title": r["title"], "url": r["url"]} for r in raw_results]
+
+        results_text = "\n\n".join(
+            f"[{i+1}] {r['title']}\n{r['content']}"
+            for i, r in enumerate(raw_results)
+        )
+
+        human_content = (
+            f"User request: {inv.user_msg}\n"
+            f"Sub-task: {inv.sub_task}\n"
+            f"Search query: {query}\n\n"
+            f"Search results:\n{results_text}\n\n"
+            "Extract the relevant answer as JSON."
+        )
+        messages = [
+            SystemMessage(content=EXTRACT_SYSTEM),
+            HumanMessage(content=human_content),
+        ]
+        async with get_llm_semaphore():
+            result = await asyncio.wait_for(
+                self.llm.ainvoke(messages),
+                timeout=self.timeout,
+            )
+        record_llm_call(f"tool:{self.spec.name}:extract", result, messages=messages, model=self.llm.model_name)
+        answer = _parse_answer(result.content)
 
         return {
             "query": query,
-            "results": results,
-            "summary": summary,
+            "answer": answer,
+            "sources": sources,
         }

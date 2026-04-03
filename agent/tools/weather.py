@@ -48,8 +48,13 @@ SPEC = ToolSpec(
         "3. **User intent** — infer the intended location and units from context.\n\n"
         "## When you run\n"
         "The planner should supply `params`. **You are invoked when those fields are "
-        "missing or invalid.** Infer values from: the user request, `context_summary`, "
-        "`sub_task`, and prior tool results.\n\n"
+        "missing, invalid, or need to be extracted from a prior tool's output.** Infer "
+        "values from: the user request, `context_summary`, `sub_task`, and prior tool "
+        "results.\n\n"
+        "## Disambiguation (critical)\n"
+        "Prior tool results may contain **multiple conflicting values**. Read the "
+        "**user request** to identify the intended entity. Prefer the consensus value "
+        "across sources. Never pick the first result blindly.\n\n"
         "## Output contract\n"
         "Return **only**:\n"
         '  {"city": "<city or place name>", "units": "metric" | "imperial"}\n\n'
@@ -110,17 +115,22 @@ class WeatherAgent(BaseToolAgent):
         return parsed
 
     async def _tool_executor(self, inv: ToolInvocation) -> dict[str, Any]:
-        if not inv.planner_params:
+        params = dict(inv.planner_params)
+        used_llm = False
+
+        if inv.has_dependencies or not _weather_params_usable(params):
             params = await self._llm_json_params_once(inv)
-        else:
-            params = dict(inv.planner_params)
+            used_llm = True
 
         if not _weather_params_usable(params):
             raise ToolParamValidationError(
                 "weather: invalid city/units in planner or tool LLM output"
             )
 
-        return await self._fetch_weather(params)
+        result = await self._fetch_weather(params)
+        if used_llm:
+            result["_resolved_params"] = params
+        return result
 
     async def _fetch_weather(self, params: dict[str, Any]) -> dict[str, Any]:
         city = params.get("city", "London")
