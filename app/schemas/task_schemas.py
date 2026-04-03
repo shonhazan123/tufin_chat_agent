@@ -1,4 +1,4 @@
-"""Task API DTOs."""
+"""Pydantic request/response DTOs for task submission and debug endpoints."""
 
 from __future__ import annotations
 
@@ -8,8 +8,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.types.reasoning_step_types import ReasoningNodeType, ReasoningStepStatus
+
 
 class TaskRequest(BaseModel):
+    """POST /task JSON body."""
+
     task: str = Field(min_length=1, description="User task text")
 
 
@@ -30,18 +34,13 @@ class TaskDetailResponse(TaskSubmitResponse):
     observability: dict[str, Any] = Field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# Debug / reasoning tree schemas
-# ---------------------------------------------------------------------------
-
-
 class ReasoningStep(BaseModel):
-    """One node in the reasoning tree (planner, tool, or responder)."""
+    """One node in the reasoning tree (planner, tool wave, or responder)."""
 
     id: str
     label: str
-    node_type: str
-    status: str
+    node_type: ReasoningNodeType
+    status: ReasoningStepStatus
     model: str | None = None
     duration_ms: int | None = None
     tokens: dict[str, int | None] | None = None

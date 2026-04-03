@@ -10,8 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
 
-from app.api.routes.health import router as health_router
-from app.api.routes.tasks import router as tasks_router
+from app.api.routes import health_router, tasks_router
 from app.cache.redis_cache import RedisCache
 from app.settings import get_settings
 from app.db.migrate import upgrade_database

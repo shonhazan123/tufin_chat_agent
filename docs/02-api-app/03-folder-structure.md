@@ -15,20 +15,26 @@ app/
 ├── settings.py                  ← Pydantic Settings: DATABASE_URL · REDIS_URL · API_KEY
 │                                   CORS_ORIGINS · CACHE_TTL_SECONDS · api_v1_prefix
 │
-├── dependencies.py              ← FastAPI DI: get_db() · get_task_service()
+├── dependencies.py              ← FastAPI DI: get_database_session() ·
+│                                   get_task_orchestration_service() (alias get_task_service)
+│
+├── types/                       ← StrEnum “documentation types” for API string contracts
+│   ├── health_status_types.py   ← OverallHealthStatus · ComponentHealthStatus · ModelWarmupStatus
+│   └── reasoning_step_types.py  ← ReasoningNodeType · ReasoningStepStatus
 │
 ├── api/
 │   └── routes/
-│       ├── tasks.py             ← POST /task · GET /tasks/{id} · GET /tasks/{id}/debug
-│       └── health.py            ← GET /health · GET /health/model
+│       ├── task_management_routes.py   ← POST /task · GET /tasks/{id} · GET /tasks/{id}/debug
+│       └── health_check_routes.py      ← GET /health · GET /health/model
 │
 ├── middleware/
 │   ├── auth.py                  ← Optional X-API-Key verification
 │   └── error_handler.py        ← Global exception handler → structured JSON errors
 │
 ├── services/
-│   └── task_service.py          ← Orchestration: DB row lifecycle + Redis + agent runner
-│                                   Also builds reasoning_tree for debug endpoint
+│   ├── task_orchestration_service.py  ← DB row lifecycle + Redis + agent_runner
+│   ├── health_check_service.py          ← SQLite / Redis / LangGraph health aggregation
+│   └── reasoning_tree_builder.py       ← observability_json → ReasoningStep[] (debug UI)
 │
 ├── integrations/
 │   └── agent_runner.py          ← Graph entry point: builds state, invokes graph,
@@ -46,13 +52,13 @@ app/
 │
 ├── warmup/
 │   ├── manager.py               ← Poll Ollama /api/tags → send warmup prompt
-│   ├── status.py                ← ModelStatus enum + thread-safe model_state singleton
+│   ├── status.py                ← ModelWarmupStatus (alias ModelStatus) + model_state singleton
 │   └── __init__.py              ← Re-exports warmup_model · ModelStatus · model_state
 │
 ├── schemas/
-│   ├── task.py                  ← TaskRequest · TaskSubmitResponse · TaskDetailResponse
+│   ├── task_schemas.py          ← TaskRequest · TaskSubmitResponse · TaskDetailResponse
 │   │                               TaskDebugResponse · ReasoningStep
-│   └── health.py                ← HealthResponse · ModelStatusResponse
+│   └── health_check_schemas.py  ← HealthResponse · ModelStatusResponse
 │
 └── observability/
     ├── logging.py               ← Structured logging helpers
@@ -65,10 +71,11 @@ app/
 
 ```mermaid
 flowchart LR
-    Route["routes/tasks.py"] --> Service["services/task_service.py"]
+    Route["routes/task_management_routes.py"] --> Service["services/task_orchestration_service.py"]
     Service --> Cache["cache/redis_cache.py"]
     Service --> Repo["db/task_repository.py"]
     Service --> Runner["integrations/agent_runner.py"]
+    Service --> Tree["services/reasoning_tree_builder.py"]
     Runner --> Graph["agent/ graph.ainvoke()"]
     Repo --> DB[("SQLite")]
     Cache --> Redis[("Redis")]

@@ -10,7 +10,7 @@ flowchart TB
 
     subgraph app ["app/  —  API + Persistence + Cache"]
         Route["Route Handler — /api/v1/*"]
-        Service["TaskService"]
+        Service["TaskOrchestrationService"]
         Redis[("Redis — Response Cache")]
         DB[("SQLite — Tasks Table")]
     end

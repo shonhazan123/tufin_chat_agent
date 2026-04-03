@@ -25,8 +25,8 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Route["tasks.py — POST /task"]
-    Service["task_service.py — create_and_run_task()"]
+    Route["task_management_routes.py — POST /task"]
+    Service["task_orchestration_service.py — create_and_run_task()"]
     Cache["redis_cache.py — get_cached_response()"]
     Runner["agent_runner.py — run_agent_task()"]
     Graph["graph.ainvoke(initial_state)"]

@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 import threading
-from enum import Enum
 from typing import Any
 
+from app.types.health_status_types import ModelWarmupStatus
 
-class ModelStatus(str, Enum):
-    NOT_STARTED = "not_started"
-    DOWNLOADING = "downloading"
-    WARMING_UP = "warming_up"
-    READY = "ready"
-    ERROR = "error"
-    SKIPPED = "skipped"
+
+# Backward-compatible name for callers that import ModelStatus from app.warmup.
+ModelStatus = ModelWarmupStatus
 
 
 class _ModelState:
@@ -21,11 +17,11 @@ class _ModelState:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._status = ModelStatus.NOT_STARTED
+        self._status = ModelWarmupStatus.NOT_STARTED
         self._detail: str = ""
 
     @property
-    def status(self) -> ModelStatus:
+    def status(self) -> ModelWarmupStatus:
         with self._lock:
             return self._status
 
@@ -34,7 +30,7 @@ class _ModelState:
         with self._lock:
             return self._detail
 
-    def set(self, status: ModelStatus, detail: str = "") -> None:
+    def set(self, status: ModelWarmupStatus, detail: str = "") -> None:
         with self._lock:
             self._status = status
             self._detail = detail

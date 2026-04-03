@@ -48,7 +48,7 @@ _CONFIG_PATCH_TARGETS = [
     "agent.tools.unit_converter.load_config",
     "agent.tools.database_query.load_config",
     "agent.graph_nodes.load_config",
-    "app.services.task_service.load_config",
+    "app.services.task_orchestration_service.load_config",
     "app.integrations.agent_runner.load_config",
 ]
 

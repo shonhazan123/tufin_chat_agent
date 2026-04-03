@@ -53,7 +53,7 @@ def test_post_task_returns_task_id_and_metrics(client: TestClient) -> None:
             total_output_tokens=4,
         )
 
-    with patch("app.services.task_service.run_agent_task", fake_run):
+    with patch("app.services.task_orchestration_service.run_agent_task", fake_run):
         r = client.post("/api/v1/task", json={"task": "ping"})
     assert r.status_code == 200
     data = r.json()
@@ -78,7 +78,7 @@ def test_get_task_roundtrip(client: TestClient) -> None:
             total_output_tokens=2,
         )
 
-    with patch("app.services.task_service.run_agent_task", fake_run):
+    with patch("app.services.task_orchestration_service.run_agent_task", fake_run):
         post = client.post("/api/v1/task", json={"task": "x"})
     assert post.status_code == 200
     tid = post.json()["task_id"]

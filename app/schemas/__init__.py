@@ -1,5 +1,5 @@
-from app.schemas.health import HealthResponse
-from app.schemas.task import (
+from app.schemas.health_check_schemas import HealthResponse, ModelStatusResponse
+from app.schemas.task_schemas import (
     ReasoningStep,
     TaskDebugResponse,
     TaskDetailResponse,
@@ -9,6 +9,7 @@ from app.schemas.task import (
 
 __all__ = [
     "HealthResponse",
+    "ModelStatusResponse",
     "ReasoningStep",
     "TaskDebugResponse",
     "TaskDetailResponse",

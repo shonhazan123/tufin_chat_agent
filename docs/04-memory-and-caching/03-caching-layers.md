@@ -108,11 +108,11 @@ Setting TTL to `0` bypasses caching entirely for that tool (used for `calculator
 
 ## Layer 5 — Redis Response Cache
 
-**Where:** `app/services/task_service.py`  
+**Where:** `app/services/task_orchestration_service.py`  
 **Scope:** External — shared across API workers, survives restarts  
 **Config:** `REDIS_URL` in `.env`
 
-This is the outermost layer. Before invoking the agent at all, `TaskService` checks Redis:
+This is the outermost layer. Before invoking the agent at all, `TaskOrchestrationService` checks Redis:
 
 ```mermaid
 flowchart LR
