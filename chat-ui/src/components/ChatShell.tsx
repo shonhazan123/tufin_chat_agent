@@ -144,17 +144,18 @@ export function ChatShell() {
           <h1 className="text-lg font-medium tracking-tight text-[#fafafa]">
             Tufin Agent
           </h1>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-shrink-0 items-center gap-3">
             <button
               type="button"
               onClick={() => setDebugTaskId('')}
-              title="Open reasoning debugger"
-              className="rounded-md border border-[#3f3f46] bg-[#1c1c1f] p-1.5 text-[#a1a1aa] transition-colors hover:border-[#7c3aed]/40 hover:bg-[#7c3aed]/10 hover:text-[#a78bfa]"
+              title="Inspect agent reasoning traces. Use a task ID from any reply."
+              className="group flex items-center gap-2 rounded-lg bg-[#7c3aed] px-4 py-2 text-[0.8125rem] font-semibold uppercase tracking-wide text-white shadow-md shadow-[#7c3aed]/20 transition-all hover:bg-[#6d28d9] hover:shadow-lg hover:shadow-[#7c3aed]/30 active:scale-[0.97]"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="11" cy="11" r="8" />
-                <path d="m21 21-4.3-4.3" />
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-80 transition-transform group-hover:scale-110">
+                <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                <circle cx="12" cy="12" r="3" />
               </svg>
+              Agent Logic
             </button>
             {(() => {
               const modelReady = provider !== 'ollama' || modelPhase === 'ready' || modelPhase === 'skipped'

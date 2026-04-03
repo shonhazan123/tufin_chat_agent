@@ -137,8 +137,10 @@ export function ReasoningSidebar({ taskId: initialTaskId, apiBase, onClose }: Pr
           )}
 
           {!data && !loading && !error && (
-            <p className="text-center text-sm text-[#71717a]">
-              Enter a task ID above to view the agent's reasoning flow.
+            <p className="text-center text-sm leading-relaxed text-[#71717a]">
+              Enter a task ID above to view the agent&apos;s reasoning flow. Copy the ID from
+              an assistant message&apos;s Observability block—same ID is used on the server for traces
+              and debugging (observability).
             </p>
           )}
 

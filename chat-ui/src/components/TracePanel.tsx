@@ -40,9 +40,14 @@ export function TracePanel({
                   e.stopPropagation()
                   onDebug(taskId)
                 }}
-                className="rounded border border-[#7c3aed]/40 bg-[#7c3aed]/10 px-2 py-0.5 text-[0.6875rem] font-medium text-[#a78bfa] transition-colors hover:bg-[#7c3aed]/20"
+                title="Open full agent reasoning traces for this task"
+                className="inline-flex items-center gap-1.5 rounded-md bg-[#7c3aed] px-2.5 py-1 text-[0.6875rem] font-semibold uppercase tracking-wide text-white shadow-sm shadow-[#7c3aed]/20 transition-all hover:bg-[#6d28d9] active:scale-[0.97]"
               >
-                Debug
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-80">
+                  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+                Agent Logic
               </button>
             )}
           </p>
