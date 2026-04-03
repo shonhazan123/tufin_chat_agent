@@ -32,6 +32,7 @@ def build_llm(agent_name: str) -> ChatOpenAI:
         "model": agent_cfg["model"],
         "temperature": agent_cfg.get("temperature", 0),
         "max_tokens": agent_cfg.get("max_tokens", 512),
+        "max_retries": agent_cfg.get("max_retries", 2),
     }
 
     if provider == "ollama":

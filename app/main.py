@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -16,16 +17,27 @@ from app.settings import get_settings
 from app.db.migrate import upgrade_database
 from app.db.session import dispose_engine, init_db
 from app.middleware.error_handler import register_exception_handlers
-from app.observability.logging import setup_logging
+from app.warmup import warmup_model
 from agent.startup import startup
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+)
 logger = logging.getLogger(__name__)
+
+
+async def _run_warmup() -> None:
+    """Background wrapper — logs errors instead of crashing the server."""
+    try:
+        await warmup_model()
+    except Exception as exc:
+        logger.error("Warmup failed (model may not be usable): %s", exc)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    setup_logging()
     upgrade_database(settings.database_url)
     await init_db(settings.database_url)
 
@@ -47,8 +59,15 @@ async def lifespan(app: FastAPI):
 
     await startup()
 
+    warmup_task = asyncio.create_task(_run_warmup(), name="model-warmup")
+
     yield
 
+    warmup_task.cancel()
+    try:
+        await warmup_task
+    except asyncio.CancelledError:
+        pass
     if redis_client is not None:
         await redis_client.close()
     await dispose_engine()

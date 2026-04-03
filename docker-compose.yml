@@ -29,8 +29,13 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     environment:
-      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: q8_0
+      OLLAMA_NUM_PARALLEL: "2"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_KEEP_ALIVE: 30m
       OLLAMA_GPU_OVERHEAD: "1073741824"
+    # Official image has no curl; use bundled CLI (same as ollama-pull).
     healthcheck:
       test: ["CMD", "/bin/ollama", "list"]
       interval: 10s
@@ -60,7 +65,7 @@ services:
       - -c
       - |
           set -e
-          MODEL="$${MODEL_TO_PULL:-mistral}"
+          MODEL="$${MODEL_TO_PULL:-qwen2.5:7b-instruct-q4_K_M}"
           exec /bin/ollama pull "$$MODEL"
     depends_on:
       ollama:
@@ -75,9 +80,11 @@ services:
     env_file:
       - .env
     environment:
-      # Resolved from host .env at compose parse time (override same keys from env_file).
+      # env_file loads .env; these keys override for in-container networking.
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://localhost:11434/v1}
+      # From inside api, localhost is this container — use Compose service DNS for Ollama.
+      # For host Ollama + API in Docker, set to http://host.docker.internal:11434/v1 (see docker.md).
+      OLLAMA_BASE_URL: http://ollama:11434/v1
       DATABASE_URL: sqlite+aiosqlite:////data/app.db
       REDIS_URL: redis://redis:6379/0
       REDIS_OPTIONAL: "false"
@@ -88,6 +95,9 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
+        required: false
     healthcheck:
       test:
         [

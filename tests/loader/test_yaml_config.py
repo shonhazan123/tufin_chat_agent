@@ -29,7 +29,7 @@ def test_load_config_ollama(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "ollama")
     cfg = load_config()
     assert cfg["provider"] == "ollama"
-    assert cfg["agents"]["planner"]["model"] == "mistral"
+    assert cfg["agents"]["planner"]["model"] == "qwen2.5:7b-instruct-q4_K_M"
     assert cfg["agents"]["planner"]["num_ctx"] == 4096
     assert cfg["agents"]["responder"]["num_ctx"] == 4096
     assert "ollama" not in cfg["tools"]

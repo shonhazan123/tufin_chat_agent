@@ -28,7 +28,7 @@ Ollama (local LLM in Docker) is optional and controlled by the Compose profile *
    - `OPENAI_API_KEY` when using OpenAI
    - Tool keys you need (`TAVILY_API_KEY`, `WEATHER_API_KEY`, etc.)
 
-The `api` service uses **`env_file: .env`** and mounts **`./.env` → `/app/.env`** read-only. The compose file also sets **`LLM_PROVIDER`** and **`OLLAMA_BASE_URL`** on the `api` service using **variable substitution from your project `.env`** (`${LLM_PROVIDER:-openai}`, `${OLLAMA_BASE_URL:-...}`), so those two keys match what Compose reads when you run `docker compose` (see `docker-compose.yml`). Other keys still come from `env_file` as usual. **The file `./.env` must exist** before `docker compose up`.
+The `api` service uses **`env_file: .env`** and mounts **`./.env` → `/app/.env`** read-only. The compose file also sets **`LLM_PROVIDER`** via substitution from the project **`.env`** (`${LLM_PROVIDER:-openai}`) and sets **`OLLAMA_BASE_URL` to `http://ollama:11434/v1`**, so that inside the container the API reaches the Compose **`ollama`** service (your `.env` may still say `localhost` for host-only dev; that value is overridden for Docker networking). Other keys still come from `env_file` as usual. **The file `./.env` must exist** before `docker compose up`.
 
 ---
 
@@ -84,8 +84,9 @@ Use this when the LLM should run **inside Docker** (Ollama service + automatic *
    ```env
    LLM_PROVIDER=openai
    OPENAI_API_KEY=sk-...
-   OLLAMA_BASE_URL=http://ollama:11434/v1
    ```
+
+   Compose already points the **api** container at Ollama at **`http://ollama:11434/v1`** (no need to duplicate that in `.env` for Docker).
 
    Recreate the API if you changed `.env`: `docker compose --profile ollama up -d --build --force-recreate api`  
    Use the app with **OpenAI**; watch logs for **`ollama-pull`** until the pull completes.
@@ -95,7 +96,6 @@ Use this when the LLM should run **inside Docker** (Ollama service + automatic *
 
    ```env
    LLM_PROVIDER=ollama
-   OLLAMA_BASE_URL=http://ollama:11434/v1
    ```
 
    Then recreate the API so it picks up the new provider:
@@ -112,12 +112,18 @@ Use this when the LLM should run **inside Docker** (Ollama service + automatic *
    docker compose --profile ollama exec ollama ollama list
    ```
 
-**Model name**: Default pull is **`mistral`** (see `config/ollama.yaml`). Override with **`OLLAMA_PULL_MODEL`** in `.env` (must match YAML).
+**Model name**: Default pull is **`qwen2.5:7b-instruct-q4_K_M`** (see `config/ollama.yaml`). Override with **`OLLAMA_PULL_MODEL`** in `.env` (must match YAML).
 
 **Ollama container env (VRAM / stability)** — set on the **`ollama`** service in `docker-compose.yml`:
 
-- `OLLAMA_NUM_PARALLEL=1` — limits concurrent inference (fewer VRAM spikes).
+- `OLLAMA_FLASH_ATTENTION=1` — enables flash attention for faster inference.
+- `OLLAMA_KV_CACHE_TYPE=q8_0` — quantized KV cache to reduce VRAM usage.
+- `OLLAMA_NUM_PARALLEL=2` — concurrent inference slots.
+- `OLLAMA_MAX_LOADED_MODELS=1` — only one model resident in VRAM at a time.
+- `OLLAMA_KEEP_ALIVE=30m` — model stays loaded for 30 minutes after last request.
 - `OLLAMA_GPU_OVERHEAD=1073741824` — reserves ~1 GB VRAM headroom.
+
+**Health check**: The **`ollama`** service is marked healthy when **`/bin/ollama list`** succeeds (the official `ollama/ollama` image does not ship **`curl`**, so HTTP-based checks fail and keep the container **unhealthy**). That blocks **`ollama-pull`** until the daemon is ready and ensures **`api`** can wait on `service_healthy` when you rely on it.
 
 **Persistence**: Models live in the **`ollama_data`** volume. `docker compose down -v` removes volumes, including downloaded models.
 
@@ -198,7 +204,7 @@ If testers open the UI from another machine, set the build arg to a reachable AP
 
 The agent uses **OpenAI-compatible** endpoints via LangChain’s `ChatOpenAI` (`agent/llm.py`). Ollama exposes that at **`{base}/v1`**. Configuration comes from `LLM_PROVIDER=ollama`, `OLLAMA_BASE_URL`, and merged YAML in `config/ollama.yaml`. Concurrency is limited to **one** in-flight LLM call when `provider == ollama` (single-GPU friendly).
 
-**Default model** (all agents in `config/ollama.yaml`): **`mistral`**, with **`num_ctx` ≤ 4096** for planner/responder and smaller for tools (limits KV-cache VRAM; see `agent/llm.py`).
+**Default model** (all agents in `config/ollama.yaml`): **`qwen2.5:7b-instruct-q4_K_M`**, with **`num_ctx` ≤ 4096** for planner/responder and smaller for tools (limits KV-cache VRAM; see `agent/llm.py`).
 
 With **`--profile ollama`**, **`ollama-pull`** downloads that model into the volume in the background; remain on **OpenAI** until the pull completes if you want the API usable immediately.
 
@@ -209,12 +215,12 @@ With **`--profile ollama`**, **`ollama-pull`** downloads that model into the vol
 Docker **does not** pull models on the host. Install from [https://ollama.com/download](https://ollama.com/download), then:
 
 ```bash
-ollama pull mistral
+ollama pull qwen2.5:7b-instruct-q4_K_M
 ```
 
 **`.env` — API on host**: `LLM_PROVIDER=ollama`, `OLLAMA_BASE_URL=http://localhost:11434/v1`
 
-**API in Docker, Ollama on host**: `OLLAMA_BASE_URL=http://host.docker.internal:11434/v1` (Linux may need `extra_hosts: host.docker.internal:host-gateway` on `api`).
+**API in Docker, Ollama on host**: change the **`OLLAMA_BASE_URL`** value for the `api` service in `docker-compose.yml` to `http://host.docker.internal:11434/v1` (or use a Compose override file). Linux may need `extra_hosts: host.docker.internal:host-gateway` on `api`. The default `http://ollama:11434/v1` is for the **Compose `ollama` service** only.
 
 Do **not** pass `--profile ollama` if you are not using the Ollama container.
 
@@ -237,14 +243,16 @@ Use `--gpus=all` only when the NVIDIA toolkit is available; omit for CPU.
 | **No `.env` file** | Compose error about missing `env_file` | `cp .env.example .env` first |
 | **`LLM_PROVIDER=openai` but no key** | Errors when calling OpenAI | Set `OPENAI_API_KEY` |
 | **`LLM_PROVIDER=ollama` before pull finishes** | Model errors from Ollama | Wait for `ollama-pull` or check `ollama list` |
-| **`OLLAMA_BASE_URL` wrong** | Connection errors | In Docker → Ollama service use `http://ollama:11434/v1` |
+| **`OLLAMA_BASE_URL` wrong** | Connection errors | Compose sets `http://ollama:11434/v1` for the `api` service; use `host.docker.internal` only if Ollama runs on the host (see below) |
 | **Host Ollama without pull** | Model not found | `ollama pull` on host |
+| **`ollama` container unhealthy** | `ollama-pull` / `api` never see a healthy Ollama | Image must support the Compose health check (`/bin/ollama list` in this repo); run `docker inspect …ollama… -f '{{json .State.Health}}'` to see failures |
 | **Tool APIs** | Tool-specific errors | Set real keys in `.env` for tools you use |
 
 ---
 
 ## Troubleshooting (Ollama)
 
+- **Unhealthy (`curl` not found)**: If you see `exec: "curl": executable file not found` in `docker inspect … State.Health`, use the repo’s health check (`/bin/ollama list`) or an equivalent that exists in your image; then `docker compose --profile ollama up --force-recreate ollama`.
 - **Connection refused**: Confirm `OLLAMA_BASE_URL` and that the `ollama` service is up (`docker compose --profile ollama ps`).
 - **Model not found**: Align `OLLAMA_PULL_MODEL` and `config/ollama.yaml`; run `docker compose --profile ollama exec ollama ollama pull <model>`.
 - **Slow or OOM**: Smaller models / lower `num_ctx` in `config/ollama.yaml` (see [tool-development-guide.md](tool-development-guide.md)).

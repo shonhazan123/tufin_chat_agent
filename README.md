@@ -37,7 +37,7 @@ docker compose up --build
 
 **2 — Ollama (model inside Docker)**
 
-In `.env`: `LLM_PROVIDER=ollama` and `OLLAMA_BASE_URL=http://ollama:11434/v1` (not `localhost` when the API runs in Docker).
+In `.env`: `LLM_PROVIDER=ollama`. Compose sets `OLLAMA_BASE_URL=http://ollama:11434/v1` for the **api** container automatically (your `.env` can keep `localhost` for local runs outside Docker).
 
 ```bash
 docker compose --profile ollama up --build

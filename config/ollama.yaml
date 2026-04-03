@@ -4,47 +4,50 @@ ollama:
   base_url: ${OLLAMA_BASE_URL:-http://localhost:11434/v1}
   api_key: ollama
 
-# Default model: mistral (Docker GPU-friendly; see docs/project-instruction/docker.md).
+# Default model: qwen2.5:7b-instruct-q4_K_M (Docker GPU-friendly; see docs/project-instruction/docker.md).
 # Context capped at 4096 via num_ctx (sent via API extra_body in agent/llm.py) to limit KV VRAM.
+# All keys here are valid ChatOpenAI constructor params (model, max_tokens, temperature, max_retries)
+# except num_ctx which is forwarded via extra_body → options in agent/llm.py.
 
 agents:
   planner:
-    model: mistral
+    model: qwen2.5:7b-instruct-q4_K_M
     max_tokens: 512
-    temperature: 0
+    temperature: 0.1
+    max_retries: 3
     num_ctx: 4096
   responder:
-    model: mistral
+    model: qwen2.5:7b-instruct-q4_K_M
     max_tokens: 1024
     temperature: 0.3
     max_retries: 3
     num_ctx: 4096
   weather:
-    model: mistral
+    model: qwen2.5:7b-instruct-q4_K_M
     max_tokens: 256
     temperature: 0
     max_retries: 3
     num_ctx: 2048
   web_search:
-    model: mistral
+    model: qwen2.5:7b-instruct-q4_K_M
     max_tokens: 512
     temperature: 0
     max_retries: 3
     num_ctx: 4096
   calculator:
-    model: mistral
+    model: qwen2.5:7b-instruct-q4_K_M
     max_tokens: 256
     temperature: 0
     max_retries: 3
     num_ctx: 2048
   unit_converter:
-    model: mistral
+    model: qwen2.5:7b-instruct-q4_K_M
     max_tokens: 256
     temperature: 0
     max_retries: 3
     num_ctx: 2048
   database_query:
-    model: mistral
+    model: qwen2.5:7b-instruct-q4_K_M
     max_tokens: 512
     temperature: 0
     max_retries: 3

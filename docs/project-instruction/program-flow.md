@@ -130,10 +130,32 @@ The 3-way split (cached / input / output) flows through the entire stack:
 
 ## LLM Semaphore Behavior
 
-For Ollama (single GPU): Semaphore(1) serializes LLM calls. The Ollama provider stack uses **`mistral`** with per-agent **`num_ctx`** (≤4096 for planner/responder; smaller for tools), passed in API options from `agent/llm.py`. The Compose **`ollama`** service sets **`OLLAMA_NUM_PARALLEL=1`** and **`OLLAMA_GPU_OVERHEAD`** for VRAM headroom; see [docker.md](docker.md).
+For Ollama (single GPU): Semaphore(1) serializes LLM calls. The Ollama provider stack uses **`qwen2.5:7b-instruct-q4_K_M`** with per-agent **`num_ctx`** (≤4096 for planner/responder; smaller for tools), passed in API options from `agent/llm.py`. The Compose **`ollama`** service sets **`OLLAMA_NUM_PARALLEL=2`**, **`OLLAMA_FLASH_ATTENTION=1`**, **`OLLAMA_KV_CACHE_TYPE=q8_0`**, and **`OLLAMA_GPU_OVERHEAD`** for VRAM headroom; see [docker.md](docker.md).
 For OpenAI: Semaphore(5) allows parallel calls.
 
 The semaphore is held only during LLM param extraction, released before API calls. This allows API calls from multiple tools to overlap even when LLM calls are serialized.
+
+## LLM Warmup (`app/warmup/`)
+
+After the agent `startup()` sequence completes, `warmup_model()` runs as a **background task** so the API is already serving `/health/model` while the model downloads.
+
+**Package layout** (`app/warmup/`):
+
+| File | Purpose |
+|------|---------|
+| `status.py` | `ModelStatus` enum (`not_started`, `downloading`, `warming_up`, `ready`, `error`, `skipped`) and thread-safe `model_state` singleton |
+| `manager.py` | Orchestrator: `_wait_for_model()` polls `GET /api/tags` until the model appears, then `_invoke_warmup()` primes the KV cache |
+| `__init__.py` | Re-exports `warmup_model`, `ModelStatus`, `model_state` |
+
+**Flow (Ollama provider only — skipped for OpenAI):**
+
+1. **Downloading** — polls `GET {ollama_base}/api/tags` every 10 s (timeout 600 s) until the model name is present (`ollama_base` comes from env-substituted YAML; Docker Compose sets **`OLLAMA_BASE_URL=http://ollama:11434/v1`** on the `api` service so this hits the Ollama container, not `localhost`).
+2. **Warming up** — sends "Reply with one word: ready" to the planner LLM (3 attempts, 3 s retry delay). Logs latency, prompt/completion tokens.
+3. **Ready** — status set; UI can proceed.
+
+If the model never appears or warmup fails, status is set to `error` and logged. The API stays up (degraded) because the warmup is a background task, not a lifespan blocker.
+
+**UI polling**: `GET /api/v1/health/model` returns `{ "status": "...", "detail": "..." }` from `model_state`.
 
 ## Cursor: code-quality review skill
 

@@ -1,4 +1,4 @@
-"""Health — SQLite, Redis, and agent graph status."""
+"""Health — SQLite, Redis, agent graph status, and model readiness."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ from sqlalchemy import text
 from app.cache.redis_cache import RedisCache
 from app.settings import get_settings
 from app.db.session import get_session_factory
-from app.schemas.health import HealthResponse
+from app.schemas.health import HealthResponse, ModelStatusResponse
+from app.warmup.status import model_state
 
 router = APIRouter(tags=["health"])
 
@@ -62,3 +63,13 @@ async def health(request: Request) -> HealthResponse:
         status=overall, sqlite=sqlite_state, redis=redis_state,
         agent=agent_state, provider=provider, models=models,
     )
+
+
+@router.get("/health/model", response_model=ModelStatusResponse)
+async def model_status() -> ModelStatusResponse:
+    """Model lifecycle status for the chat UI to poll.
+
+    Returns one of: not_started, downloading, warming_up, ready, error, skipped.
+    """
+    snap = model_state.snapshot()
+    return ModelStatusResponse(status=snap["status"], detail=snap["detail"])

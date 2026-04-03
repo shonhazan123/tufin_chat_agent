@@ -1,19 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ChatMessage } from '../types'
+import { apiBase } from '../lib/api'
 import { MessageList } from './MessageList'
 import { Composer } from './Composer'
+import { ModelStatusBanner } from './ModelStatusBanner'
+import type { ModelPhase } from './ModelStatusBanner'
 import { ReasoningSidebar } from './ReasoningSidebar'
 
 function newId() {
   return crypto.randomUUID()
-}
-
-function apiBase(): string {
-  const raw = import.meta.env.VITE_API_BASE_URL
-  return (typeof raw === 'string' && raw.length > 0
-    ? raw
-    : 'http://127.0.0.1:8000'
-  ).replace(/\/$/, '')
 }
 
 type HealthStatus = 'unknown' | 'ok' | 'degraded' | 'offline'
@@ -27,6 +22,7 @@ export function ChatShell() {
   const [health, setHealth] = useState<HealthStatus>('unknown')
   const [agentReady, setAgentReady] = useState<boolean | null>(null)
   const [provider, setProvider] = useState<string | null>(null)
+  const [modelPhase, setModelPhase] = useState<ModelPhase>('not_started')
   const timerRef = useRef<ReturnType<typeof setInterval>>(null)
 
   useEffect(() => {
@@ -160,40 +156,64 @@ export function ChatShell() {
                 <path d="m21 21-4.3-4.3" />
               </svg>
             </button>
-            <span
-              className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
-                health === 'ok' && agentReady
-                  ? 'border-[#059669]/40 bg-[#059669]/10 text-[#86efac]'
-                  : health === 'offline' || agentReady === false
-                    ? 'border-[#dc2626]/40 bg-[#dc2626]/10 text-[#fca5a5]'
-                    : health === 'degraded'
-                      ? 'border-[#d97706]/40 bg-[#d97706]/10 text-[#fcd34d]'
-                      : 'border-[#3f3f46] bg-[#1c1c1f] text-[#71717a]'
-              }`}
-              title={`${base} — status: ${health}, agent: ${agentReady ? 'ready' : 'not ready'}${provider ? `, provider: ${provider}` : ''}`}
-            >
-              <span className={`inline-block h-2 w-2 rounded-full ${
-                health === 'ok' && agentReady
-                  ? 'bg-[#34d399] shadow-[0_0_6px_#34d399]'
-                  : health === 'offline' || agentReady === false
-                    ? 'bg-[#f87171] shadow-[0_0_6px_#f87171]'
-                    : health === 'degraded'
-                      ? 'bg-[#fbbf24] shadow-[0_0_6px_#fbbf24]'
-                      : 'bg-[#71717a]'
-              }`} />
-              {health === 'ok' && agentReady
-                ? `Active · ${provider === 'ollama' ? 'Ollama' : 'OpenAI'}`
-                : health === 'offline'
-                  ? 'Offline'
-                  : agentReady === false
-                    ? 'Agent Not Ready'
-                    : health === 'degraded'
-                      ? 'Degraded'
-                      : 'Checking...'}
-            </span>
+            {(() => {
+              const modelReady = provider !== 'ollama' || modelPhase === 'ready' || modelPhase === 'skipped'
+              const fullyActive = health === 'ok' && agentReady && modelReady
+
+              const ollamaLoading = provider === 'ollama'
+                && (modelPhase === 'downloading' || modelPhase === 'warming_up' || modelPhase === 'not_started')
+
+              let pillBorder: string, pillBg: string, pillText: string
+              let dotColor: string
+              let label: string
+
+              if (health === 'offline') {
+                pillBorder = 'border-[#dc2626]/40'; pillBg = 'bg-[#dc2626]/10'; pillText = 'text-[#fca5a5]'
+                dotColor = 'bg-[#f87171] shadow-[0_0_6px_#f87171]'
+                label = 'Offline'
+              } else if (agentReady === false) {
+                pillBorder = 'border-[#dc2626]/40'; pillBg = 'bg-[#dc2626]/10'; pillText = 'text-[#fca5a5]'
+                dotColor = 'bg-[#f87171] shadow-[0_0_6px_#f87171]'
+                label = 'Agent Not Ready'
+              } else if (modelPhase === 'error') {
+                pillBorder = 'border-[#dc2626]/40'; pillBg = 'bg-[#dc2626]/10'; pillText = 'text-[#fca5a5]'
+                dotColor = 'bg-[#f87171] shadow-[0_0_6px_#f87171]'
+                label = 'Model Error'
+              } else if (ollamaLoading) {
+                pillBorder = 'border-[#6366f1]/40'; pillBg = 'bg-[#6366f1]/10'; pillText = 'text-[#a5b4fc]'
+                dotColor = 'bg-[#818cf8] animate-pulse shadow-[0_0_6px_#818cf8]'
+                label = modelPhase === 'downloading' ? 'Downloading · Ollama'
+                  : modelPhase === 'warming_up' ? 'Warming Up · Ollama'
+                  : 'Loading · Ollama'
+              } else if (fullyActive) {
+                pillBorder = 'border-[#059669]/40'; pillBg = 'bg-[#059669]/10'; pillText = 'text-[#86efac]'
+                dotColor = 'bg-[#34d399] shadow-[0_0_6px_#34d399]'
+                label = `Active · ${provider === 'ollama' ? 'Ollama' : 'OpenAI'}`
+              } else if (health === 'degraded') {
+                pillBorder = 'border-[#d97706]/40'; pillBg = 'bg-[#d97706]/10'; pillText = 'text-[#fcd34d]'
+                dotColor = 'bg-[#fbbf24] shadow-[0_0_6px_#fbbf24]'
+                label = 'Degraded'
+              } else {
+                pillBorder = 'border-[#3f3f46]'; pillBg = 'bg-[#1c1c1f]'; pillText = 'text-[#71717a]'
+                dotColor = 'bg-[#71717a]'
+                label = 'Checking…'
+              }
+
+              return (
+                <span
+                  className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${pillBorder} ${pillBg} ${pillText}`}
+                  title={`${base} — status: ${health}, agent: ${agentReady ? 'ready' : 'not ready'}, model: ${modelPhase}${provider ? `, provider: ${provider}` : ''}`}
+                >
+                  <span className={`inline-block h-2 w-2 rounded-full ${dotColor}`} />
+                  {label}
+                </span>
+              )
+            })()}
           </div>
         </div>
       </header>
+
+      <ModelStatusBanner provider={provider} onStatusChange={setModelPhase} />
 
       <MessageList messages={messages} onDebug={(id) => setDebugTaskId(id)} />
 
