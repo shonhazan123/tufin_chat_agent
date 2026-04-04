@@ -33,15 +33,7 @@ Edit **`.env`**. Use the next section so your values match the command you run.
 
 Pick **one**. The command and `.env` must match.
 
-**1 — OpenAI**
-
-In `.env`: `LLM_PROVIDER=openai` and a valid `OPENAI_API_KEY`.
-
-```bash
-docker compose up --build
-```
-
-**2 — Ollama (model inside Docker)**
+**1 — Ollama (model inside Docker)**
 
 > **System Requirements**
 >
@@ -64,6 +56,14 @@ In `.env`: `LLM_PROVIDER=ollama`. Compose sets `OLLAMA_BASE_URL=http://ollama:11
 
 ```bash
 docker compose --profile ollama up --build
+```
+
+**2 — OpenAI**
+
+Change In `.env`: `LLM_PROVIDER=openai` and a valid `OPENAI_API_KEY`.
+
+```bash
+docker compose up --build
 ```
 
 ---
